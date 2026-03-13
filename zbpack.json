@@ -1,0 +1,5 @@
+{
+    "build_command": "bun install",
+    "start_command": "bun run src/main.ts",
+    "bun": true
+}

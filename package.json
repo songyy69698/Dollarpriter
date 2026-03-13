@@ -1,0 +1,16 @@
+{
+    "name": "dollarprinter",
+    "version": "2.0.1",
+    "description": "SOL Sniper v2.0.1 — 三模式三币种 因果套利 (Bun/TypeScript)",
+    "scripts": {
+        "dev": "bun run src/main.ts",
+        "start": "bun run src/main.ts"
+    },
+    "engines": {
+        "bun": ">= 1.0.0"
+    },
+    "dependencies": {},
+    "devDependencies": {
+        "@types/bun": "latest"
+    }
+}

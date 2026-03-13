@@ -1,0 +1,432 @@
+/**
+ * 🔌 Bitunix WebSocket 数据引擎 — SOL 狙击手 v2.0
+ * ═══════════════════════════════════════════════════════
+ * 三币种订阅: SOLUSDT + ETHUSDT + BTCUSDT
+ * BTC 领路 → 自动比较 SOL vs ETH 效率 → 切换最优交易对
+ */
+
+import {
+    BITUNIX_WS_PUBLIC, SYMBOL, ETH_SYMBOL, BTC_SYMBOL,
+    EFFICIENCY_WINDOW, AVG_VOL_WINDOW,
+} from "./config";
+
+function log(msg: string) {
+    const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
+    console.log(`${ts} [ws] ${msg}`);
+}
+
+// ═══════════════════════════════════════════════
+// 因果快照 — 三币种数据
+// ═══════════════════════════════════════════════
+
+export interface CausalSnapshot {
+    price: number;
+    priceTs: number;
+    connected: boolean;
+
+    // ── SOL 数据 ──
+    buyDelta: number;
+    sellDelta: number;
+    netDelta: number;
+    askWallVol: number;
+    bidWallVol: number;
+    bestAsk: number;
+    bestBid: number;
+    spread: number;
+    efficiency: number;
+    avgEfficiency: number;
+    avgVol: number;
+    recentVol: number;
+    isEfficiencyDecay: boolean;
+
+    // ── BTC 联动数据 ──
+    btcPrice: number;
+    btcBuyDelta: number;
+    btcSellDelta: number;
+    btcAskWallVol: number;
+    btcBidWallVol: number;
+    btcConnected: boolean;
+
+    // ── ETH 自动切换数据 ──
+    ethPrice: number;
+    ethBuyDelta: number;
+    ethSellDelta: number;
+    ethAskWallVol: number;
+    ethBidWallVol: number;
+    ethEfficiency: number;
+    ethAvgEfficiency: number;
+    ethConnected: boolean;
+}
+
+// ═══════════════════════════════════════════════
+// 单币种数据追踪器
+// ═══════════════════════════════════════════════
+
+class SymbolTracker {
+    readonly symbol: string;
+
+    price = 0;
+    priceTs = 0;
+
+    bestAsk = 0;
+    bestBid = 0;
+    askWallVol = 0;
+    bidWallVol = 0;
+
+    deltaRing: { ts: number; buyVol: number; sellVol: number; efficiency: number; vol: number }[] = [];
+    readonly DELTA_WINDOW_MS = 10_000;
+
+    efficiencyRing: number[] = [];
+    volRing: number[] = [];
+    lastPrice = 0;
+
+    constructor(symbol: string) {
+        this.symbol = symbol;
+    }
+
+    getDelta(): { buyDelta: number; sellDelta: number } {
+        const now = Date.now();
+        while (this.deltaRing.length > 0 && now - this.deltaRing[0].ts > this.DELTA_WINDOW_MS) {
+            this.deltaRing.shift();
+        }
+        let buyDelta = 0, sellDelta = 0;
+        for (const d of this.deltaRing) {
+            buyDelta += d.buyVol;
+            sellDelta += d.sellVol;
+        }
+        return { buyDelta, sellDelta };
+    }
+
+    getAvgEfficiency(): number {
+        return this.efficiencyRing.length > 0
+            ? this.efficiencyRing.reduce((a, b) => a + b, 0) / this.efficiencyRing.length
+            : 0.01;
+    }
+
+    getAvgVol(): number {
+        return this.volRing.length > 0
+            ? this.volRing.reduce((a, b) => a + b, 0) / this.volRing.length
+            : 1;
+    }
+
+    getLastEfficiency(): number {
+        return this.deltaRing[this.deltaRing.length - 1]?.efficiency ?? 0;
+    }
+
+    getRecentVol(): number {
+        return this.deltaRing[this.deltaRing.length - 1]?.vol ?? 0;
+    }
+
+    handleTrade(trades: any) {
+        const now = Date.now();
+        const tradeList = Array.isArray(trades) ? trades : [trades];
+
+        for (const t of tradeList) {
+            const tradePrice = +(t.p || t.price || 0);
+            const qty = +(t.v || t.q || t.qty || t.sz || t.size || 0);
+            const side = String(t.s || t.side || "").toLowerCase();
+
+            if (tradePrice <= 0 || qty <= 0) continue;
+
+            this.price = tradePrice;
+            this.priceTs = now;
+
+            const isBuyer = side === "buy";
+            const priceChange = this.lastPrice > 0 ? Math.abs(tradePrice - this.lastPrice) : 0;
+            const efficiency = qty > 0 ? priceChange / qty : 0;
+
+            this.deltaRing.push({
+                ts: now,
+                buyVol: isBuyer ? qty : 0,
+                sellVol: isBuyer ? 0 : qty,
+                efficiency,
+                vol: qty,
+            });
+
+            if (this.deltaRing.length > 5000) {
+                this.deltaRing = this.deltaRing.slice(-2500);
+            }
+
+            this.efficiencyRing.push(efficiency);
+            if (this.efficiencyRing.length > EFFICIENCY_WINDOW) this.efficiencyRing.shift();
+
+            this.volRing.push(qty);
+            if (this.volRing.length > AVG_VOL_WINDOW) this.volRing.shift();
+
+            this.lastPrice = tradePrice;
+        }
+    }
+
+    handleDepth(depthData: any) {
+        const asks = depthData?.asks || depthData?.a || [];
+        const bids = depthData?.bids || depthData?.b || [];
+
+        // DEBUG: 首次收到 depth 数据时打印原始格式
+        if (this.askWallVol === 0 && (asks.length > 0 || bids.length > 0)) {
+            log(`🔍 [${this.symbol}] Depth 原始数据: asks=${JSON.stringify(asks.slice(0, 2))} bids=${JSON.stringify(bids.slice(0, 2))}`);
+        }
+        if (this.askWallVol === 0 && asks.length === 0 && bids.length === 0) {
+            // 可能 key 不对，打印整个 depthData 的 keys
+            log(`⚠️ [${this.symbol}] Depth asks/bids 为空! keys=${JSON.stringify(Object.keys(depthData || {}))} raw=${JSON.stringify(depthData).slice(0, 300)}`);
+        }
+
+        let askVol = 0;
+        for (let i = 0; i < Math.min(5, asks.length); i++) {
+            const entry = asks[i];
+            const vol = +(Array.isArray(entry) ? entry[1] : entry?.sz || entry?.qty || entry?.v || 0);
+            if (i === 0) this.bestAsk = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
+            askVol += vol;
+        }
+        this.askWallVol = askVol;
+
+        let bidVol = 0;
+        for (let i = 0; i < Math.min(5, bids.length); i++) {
+            const entry = bids[i];
+            const vol = +(Array.isArray(entry) ? entry[1] : entry?.sz || entry?.qty || entry?.v || 0);
+            if (i === 0) this.bestBid = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
+            bidVol += vol;
+        }
+        this.bidWallVol = bidVol;
+    }
+}
+
+// ═══════════════════════════════════════════════
+// 主引擎 — 三币种 WS
+// ═══════════════════════════════════════════════
+
+export class BitunixWSEngine {
+    private ws: WebSocket | null = null;
+    private running = false;
+    private _connected = false;
+    private startTime = 0;
+    private msgCount = 0;
+    private reconnectCount = 0;
+
+    // 三币种追踪器
+    private sol: SymbolTracker;
+    private btc: SymbolTracker;
+    private eth: SymbolTracker;
+
+    constructor() {
+        this.sol = new SymbolTracker(SYMBOL);
+        this.btc = new SymbolTracker(BTC_SYMBOL);
+        this.eth = new SymbolTracker(ETH_SYMBOL);
+    }
+
+    start() {
+        this.running = true;
+        this.startTime = Date.now();
+        this.connectWS();
+        this.startDepthFallback();  // REST 备援
+    }
+
+    // ═══════════════════════════════════════════════
+    // REST 深度同步 — 三币种强制轮询 (永不停止)
+    // ═══════════════════════════════════════════════
+
+    private startDepthFallback() {
+        const BASE = "https://fapi.bitunix.com";
+        let loggedOnce = false;
+
+        setInterval(async () => {
+            if (!this.running) return;
+
+            // 三币种 REST 深度轮询 (始终活跃)
+            const symbols = [
+                { sym: SYMBOL, tracker: this.sol },
+                { sym: BTC_SYMBOL, tracker: this.btc },
+                { sym: ETH_SYMBOL, tracker: this.eth },
+            ];
+
+            for (const { sym, tracker } of symbols) {
+                try {
+                    const res = await fetch(`${BASE}/api/v1/futures/market/depth?symbol=${sym}&limit=5`);
+                    const json = (await res.json()) as any;
+                    if (String(json?.code) !== "0") continue;
+
+                    const depthData = json?.data;
+                    if (depthData) {
+                        tracker.handleDepth(depthData);
+                    }
+                } catch {}
+            }
+
+            // 首次成功时打印一次
+            if (!loggedOnce && (this.sol.askWallVol > 0 || this.sol.bidWallVol > 0)) {
+                log(`✅ [REST] 三币种墙数据同步启动: SOL A:${this.sol.askWallVol.toFixed(1)} B:${this.sol.bidWallVol.toFixed(1)} | BTC A:${this.btc.askWallVol.toFixed(4)} B:${this.btc.bidWallVol.toFixed(4)}`);
+                loggedOnce = true;
+            }
+        }, 2000);
+    }
+
+    stop() {
+        this.running = false;
+        this.ws?.close();
+    }
+
+    get connected(): boolean {
+        return this._connected;
+    }
+
+    // ═══════════════════════════════════════════════
+    // 因果快照 — 三币种数据
+    // ═══════════════════════════════════════════════
+
+    getSnapshot(): CausalSnapshot {
+        // SOL
+        const solDelta = this.sol.getDelta();
+        const solEfficiency = this.sol.getLastEfficiency();
+        const solAvgEfficiency = this.sol.getAvgEfficiency();
+        const solAvgVol = this.sol.getAvgVol();
+        const solRecentVol = this.sol.getRecentVol();
+        const isEfficiencyDecay = solRecentVol > solAvgVol * 3 && solEfficiency < 0.2;
+
+        // BTC
+        const btcDelta = this.btc.getDelta();
+
+        // ETH
+        const ethDelta = this.eth.getDelta();
+        const ethEfficiency = this.eth.getLastEfficiency();
+        const ethAvgEfficiency = this.eth.getAvgEfficiency();
+
+        return {
+            price: this.sol.price,
+            priceTs: this.sol.priceTs,
+            connected: this._connected,
+
+            buyDelta: solDelta.buyDelta,
+            sellDelta: solDelta.sellDelta,
+            netDelta: solDelta.buyDelta - solDelta.sellDelta,
+
+            askWallVol: this.sol.askWallVol,
+            bidWallVol: this.sol.bidWallVol,
+            bestAsk: this.sol.bestAsk,
+            bestBid: this.sol.bestBid,
+            spread: this.sol.bestAsk > 0 && this.sol.bestBid > 0
+                ? this.sol.bestAsk - this.sol.bestBid : 999,
+
+            efficiency: solEfficiency,
+            avgEfficiency: solAvgEfficiency,
+            avgVol: solAvgVol,
+            recentVol: solRecentVol,
+            isEfficiencyDecay,
+
+            // BTC
+            btcPrice: this.btc.price,
+            btcBuyDelta: btcDelta.buyDelta,
+            btcSellDelta: btcDelta.sellDelta,
+            btcAskWallVol: this.btc.askWallVol,
+            btcBidWallVol: this.btc.bidWallVol,
+            btcConnected: this.btc.price > 0,
+
+            // ETH
+            ethPrice: this.eth.price,
+            ethBuyDelta: ethDelta.buyDelta,
+            ethSellDelta: ethDelta.sellDelta,
+            ethAskWallVol: this.eth.askWallVol,
+            ethBidWallVol: this.eth.bidWallVol,
+            ethEfficiency,
+            ethAvgEfficiency,
+            ethConnected: this.eth.price > 0,
+        };
+    }
+
+    // ═══════════════════════════════════════════════
+    // WebSocket 连接 — 三币种订阅
+    // ═══════════════════════════════════════════════
+
+    private connectWS() {
+        const url = BITUNIX_WS_PUBLIC;
+        log(`🔌 连接 Bitunix WS: ${url}`);
+
+        this.ws = new WebSocket(url);
+
+        this.ws.onopen = () => {
+            this._connected = true;
+            this.reconnectCount = 0;
+            log("✅ Bitunix WS 已连接, 订阅三币种频道...");
+
+            const subscribeMsg = JSON.stringify({
+                op: "subscribe",
+                args: [
+                    { ch: "trade", symbol: SYMBOL },
+                    { ch: "depth", symbol: SYMBOL },
+                    { ch: "trade", symbol: BTC_SYMBOL },
+                    { ch: "depth", symbol: BTC_SYMBOL },
+                    { ch: "trade", symbol: ETH_SYMBOL },
+                    { ch: "depth", symbol: ETH_SYMBOL },
+                ],
+            });
+            this.ws!.send(subscribeMsg);
+            log(`📡 已订阅: [${SYMBOL}] + [${BTC_SYMBOL}] + [${ETH_SYMBOL}]`);
+        };
+
+        this.ws.onclose = () => {
+            this._connected = false;
+            if (this.running) {
+                this.reconnectCount++;
+                const delay = Math.min(30000, 1000 * Math.pow(2, this.reconnectCount));
+                log(`🔌 断线, ${delay / 1000}s 后重连 (#${this.reconnectCount})`);
+                setTimeout(() => this.connectWS(), delay);
+            }
+        };
+
+        this.ws.onerror = (e) => {
+            log(`❌ WS 错误: ${e}`);
+        };
+
+        this.ws.onmessage = (event) => {
+            this.msgCount++;
+            try {
+                const msg = JSON.parse(event.data as string);
+                this.handleMessage(msg);
+            } catch {}
+        };
+
+        setInterval(() => {
+            if (this._connected && this.ws?.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ op: "ping" }));
+            }
+        }, 15_000);
+    }
+
+    // ═══════════════════════════════════════════════
+    // 消息路由 — 三币种分发
+    // ═══════════════════════════════════════════════
+
+    private handleMessage(msg: any) {
+        if (msg === "pong" || msg?.op === "pong") return;
+
+        if (msg?.op === "subscribe") {
+            log(`✅ 订阅确认: ${JSON.stringify(msg?.args || msg)}`);
+            return;
+        }
+
+        // DEBUG: 打印前 10 条非 pong 消息的完整结构
+        if (this.msgCount <= 10) {
+            log(`🔬 MSG#${this.msgCount}: ${JSON.stringify(msg).slice(0, 500)}`);
+        }
+
+        const ch = msg?.ch || msg?.arg?.ch || "";
+        const symbol = msg?.symbol || msg?.arg?.symbol || "";
+        const data = msg?.data;
+        if (!data) return;
+
+        const tracker = this.getTracker(symbol);
+        if (!tracker) return;
+
+        if (ch === "trade" || ch.includes("trade")) {
+            tracker.handleTrade(data);
+        } else if (ch === "depth5" || ch.includes("depth")) {
+            tracker.handleDepth(data);
+        }
+    }
+
+    private getTracker(symbol: string): SymbolTracker | null {
+        const upper = (symbol || "").toUpperCase();
+        if (upper === SYMBOL || upper.includes("SOL")) return this.sol;
+        if (upper === BTC_SYMBOL || upper.includes("BTC")) return this.btc;
+        if (upper === ETH_SYMBOL || upper.includes("ETH")) return this.eth;
+        return null;
+    }
+}
