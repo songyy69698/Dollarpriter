@@ -1,24 +1,20 @@
 /**
- * 🧠 V52.4 "Logic Leader" — 策略引擎
+ * 🧠 V66 "LEVIATHAN" — 策略引擎
  * ═══════════════════════════════════════════════
- * 双条件入场 (Proportional Entry):
- *   条件 A: BTC >= 4.0x + ETH效率 >= 1.0 (BTC强力驱动)
- *   条件 B: BTC >= 2.5x + ETH效率 >= 2.0 (ETH强效率驱动)
+ * 15M 结构性突破入场:
+ *   SHORT: Price < lowest(Low, 2根15M) AND BTC_Lead ≥ 4.0x
+ *   LONG:  Price > highest(High, 2根15M) AND BTC_Lead ≥ 4.0x
  *
- * + Spread/Liquidity Gate + CVD 方向一致性
+ * + Spread/Liquidity Gate + BTC Lead 确认
  */
 
 import type { CausalSnapshot } from "./bitunix-ws";
+import type { CandleTracker } from "./candles";
 import {
-    IMBALANCE_RATIO, COOLDOWN_MS, WS_LAG_MAX_MS,
-    MARGIN_DEFAULT, TRADE_HOUR_START, TRADE_HOUR_END,
-    EFFICIENCY_ABS_THRESHOLD, ALLOW_SHORT,
-    BTC_IMBALANCE_RATIO, SOL_RESONANCE_RATIO,
-    BTC_LEAD_STRONG, ETH_EFF_WITH_STRONG_BTC,
-    BTC_LEAD_WEAK, ETH_EFF_WITH_WEAK_BTC,
-    SOL_MIN_EFFICIENCY, ETH_MIN_EFFICIENCY,
-    SYMBOL, ETH_SYMBOL, MAX_SPREAD_POINTS,
-    MIN_DEPTH_ETH, CVD_CONFIRM_TICKS,
+    COOLDOWN_MS, WS_LAG_MAX_MS,
+    ALLOW_SHORT, BTC_ENTRY_RATIO,
+    ETH_SYMBOL, MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
+    getMargin,
 } from "./config";
 
 function log(msg: string) {
@@ -31,194 +27,102 @@ export interface CausalSignal {
     price: number;
     margin: number;
     reason: string;
-    mode: "sniper" | "resonance" | "auto-switch";
     targetSymbol: string;
 }
 
-/** CVD 方向一致性检查 */
-function checkCvdDirection(dirs: number[], side: "long" | "short", n: number): boolean {
-    if (dirs.length < n) return false;
-    const recent = dirs.slice(-n);
-    if (side === "long") return recent.every(d => d > 0);
-    return recent.every(d => d < 0);
-}
-
-/**
- * V52.4: 双条件 BTC Lead 检查 (Proportional Entry)
- * 条件 A: BTC >= 4.0x + ETH效率 >= 1.0
- * 条件 B: BTC >= 2.5x + ETH效率 >= 2.0
- * 返回触发的条件标签，或 null
- */
-function checkProportionalEntry(btcRatio: number, ethEff: number): string | null {
-    if (btcRatio >= BTC_LEAD_STRONG && ethEff >= ETH_EFF_WITH_STRONG_BTC) {
-        return `A:BTC${btcRatio.toFixed(1)}x≥${BTC_LEAD_STRONG}+ETHeff${ethEff.toFixed(2)}≥${ETH_EFF_WITH_STRONG_BTC}`;
-    }
-    if (btcRatio >= BTC_LEAD_WEAK && ethEff >= ETH_EFF_WITH_WEAK_BTC) {
-        return `B:BTC${btcRatio.toFixed(1)}x≥${BTC_LEAD_WEAK}+ETHeff${ethEff.toFixed(2)}≥${ETH_EFF_WITH_WEAK_BTC}`;
-    }
-    return null;
-}
-
 export class CausalStrategy {
-    private lastSignalTs = 0;
+    private lastTradeTs = 0;
     private scanCount = 0;
 
     getScanCount(): number { return this.scanCount; }
 
-    evaluate(snap: CausalSnapshot): CausalSignal | null {
-        const now = Date.now();
+    /**
+     * V66: 15M 结构性突破评估
+     * @param snap  WS 数据快照
+     * @param ct    K线追踪器
+     * @param balance 当前余额 (用于复利)
+     */
+    evaluate(snap: CausalSnapshot, ct: CandleTracker, balance: number): CausalSignal | null {
         this.scanCount++;
+        const now = Date.now();
 
-        // ── 冷却 ──
-        if (now - this.lastSignalTs < COOLDOWN_MS) return null;
-
-        // ── 基础健康 ──
+        // ═══ 基础检查 ═══
+        if (now - this.lastTradeTs < COOLDOWN_MS) return null;
         if (!snap.connected || snap.price <= 0) return null;
         if (now - snap.priceTs > WS_LAG_MAX_MS) return null;
 
-        // ── 时段限制 ──
-        const utcHour = new Date().getUTCHours();
-        if (utcHour < TRADE_HOUR_START || utcHour >= TRADE_HOUR_END) return null;
+        // ═══ K线数据就绪检查 ═══
+        if (!ct.ready) return null;
 
-        // ── 盘口数据就绪 ──
-        if (snap.askWallVol <= 0 && snap.bidWallVol <= 0) return null;
-        if (snap.avgEfficiency <= 0) return null;
+        // ═══ ETH 数据 ═══
+        const ethPrice = snap.ethPrice;
+        if (ethPrice <= 0) return null;
 
-        // ── Spread Guard ──
-        if (snap.spread > MAX_SPREAD_POINTS) return null;
+        // ═══ Spread Gate ═══
+        const ethSpread = snap.ethSpread;
+        if (ethSpread > MAX_SPREAD_POINTS) return null;
 
-        const margin = MARGIN_DEFAULT;
+        // ═══ Depth Gate ═══
+        if (snap.ethTop3Depth < MIN_DEPTH_ETH) return null;
 
-        // ═══════════════════════════════════════════
-        // 模式 C — V52.4 双条件 BTC 领路 (最高优先级)
-        // 条件 A: BTC >= 4.0x + ETH效率 >= 1.0
-        // 条件 B: BTC >= 2.5x + ETH效率 >= 2.0
-        // ═══════════════════════════════════════════
+        // ═══ BTC Lead 强度 ═══
+        const btcBuy = snap.btcBuyDelta;
+        const btcSell = snap.btcSellDelta;
+        const btcTotal = btcBuy + btcSell;
+        if (btcTotal <= 0) return null;
 
-        // ── 做多 ──
-        if (snap.btcConnected && snap.btcAskWallVol > 0) {
-            const btcImbalance = snap.btcBuyDelta / snap.btcAskWallVol;
-            const ethEff = snap.ethEfficiency;
-            const solEff = snap.efficiency;
+        const btcBuyRatio = btcBuy / Math.max(btcSell, 0.001);
+        const btcSellRatio = btcSell / Math.max(btcBuy, 0.001);
 
-            const proportional = checkProportionalEntry(btcImbalance, ethEff);
-            if (proportional) {
-                // SOL 效率更高 → 狙击 SOL
-                if (solEff > ethEff && solEff > SOL_MIN_EFFICIENCY) {
-                    if (!checkCvdDirection(snap.recentDeltaDirs, "long", CVD_CONFIRM_TICKS)) return null;
-                    const reason = `🚀 BTC领路→SOL [${proportional}] | SOLeff=${solEff.toFixed(4)} CVD✅`;
-                    log(`🎯 ${reason}`);
-                    this.lastSignalTs = now;
-                    return { side: "long", price: snap.price, margin, reason, mode: "auto-switch", targetSymbol: SYMBOL };
-                }
+        // ═══ 15M 结构性参考线 ═══
+        const { lowest2_15m, highest2_15m, prev15mHigh, prev15mLow } = ct;
 
-                // ETH 效率达标 → 做 ETH
-                if (snap.ethConnected && ethEff >= ETH_MIN_EFFICIENCY) {
-                    if (snap.ethSpread > MAX_SPREAD_POINTS) {
-                        log(`⛔ ETH Spread Gate: ${snap.ethSpread.toFixed(3)}pt > ${MAX_SPREAD_POINTS}`);
-                        return null;
-                    }
-                    if (snap.ethTop3Depth < MIN_DEPTH_ETH) {
-                        log(`⛔ ETH Depth Gate: Top3=${snap.ethTop3Depth.toFixed(1)} < ${MIN_DEPTH_ETH} ETH`);
-                        return null;
-                    }
-                    if (!checkCvdDirection(snap.ethRecentDeltaDirs, "long", CVD_CONFIRM_TICKS)) return null;
-                    const reason = `💎 BTC领路→ETH [${proportional}] | Sp=${snap.ethSpread.toFixed(3)} CVD✅`;
-                    log(`🎯 ${reason}`);
-                    this.lastSignalTs = now;
-                    return { side: "long", price: snap.ethPrice, margin, reason, mode: "auto-switch", targetSymbol: ETH_SYMBOL };
-                }
-            }
+        // ═══ 动态保证金 ═══
+        const margin = getMargin(balance);
+
+        // ═══════════════════════════════════════════════
+        // 入场判定: 15M 结构性突破
+        // ═══════════════════════════════════════════════
+
+        // --- SHORT: 跌破最近 2 根 15M 最低价 + BTC 卖压主导 ---
+        if (
+            ALLOW_SHORT &&
+            ethPrice < lowest2_15m &&
+            btcSellRatio >= BTC_ENTRY_RATIO
+        ) {
+            this.lastTradeTs = now;
+            const reason =
+                `🐋 15M突破SHORT: $${ethPrice.toFixed(2)} < L2=${lowest2_15m.toFixed(2)} | ` +
+                `BTC卖压=${btcSellRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
+                `Guard=${prev15mHigh.toFixed(2)}+1.5pt`;
+            log(reason);
+            return {
+                side: "short",
+                price: ethPrice,
+                margin,
+                reason,
+                targetSymbol: ETH_SYMBOL,
+            };
         }
 
-        // ── 做空 (BTC 卖压) ──
-        if (ALLOW_SHORT && snap.btcConnected && snap.btcBidWallVol > 0) {
-            const btcSellImbalance = snap.btcSellDelta / snap.btcBidWallVol;
-            const ethEff = snap.ethEfficiency;
-            const solEff = snap.efficiency;
-
-            const proportional = checkProportionalEntry(btcSellImbalance, ethEff);
-            if (proportional) {
-                if (solEff > ethEff && solEff > SOL_MIN_EFFICIENCY) {
-                    if (!checkCvdDirection(snap.recentDeltaDirs, "short", CVD_CONFIRM_TICKS)) return null;
-                    const reason = `🚀 BTC领路→SOL空 [${proportional}] | SOLeff=${solEff.toFixed(4)} CVD✅`;
-                    log(`🎯 ${reason}`);
-                    this.lastSignalTs = now;
-                    return { side: "short", price: snap.price, margin, reason, mode: "auto-switch", targetSymbol: SYMBOL };
-                }
-
-                if (snap.ethConnected && ethEff >= ETH_MIN_EFFICIENCY) {
-                    if (snap.ethSpread > MAX_SPREAD_POINTS) return null;
-                    if (snap.ethTop3Depth < MIN_DEPTH_ETH) return null;
-                    if (!checkCvdDirection(snap.ethRecentDeltaDirs, "short", CVD_CONFIRM_TICKS)) return null;
-                    const reason = `💎 BTC领路→ETH空 [${proportional}] | Sp=${snap.ethSpread.toFixed(3)} CVD✅`;
-                    log(`🎯 ${reason}`);
-                    this.lastSignalTs = now;
-                    return { side: "short", price: snap.ethPrice, margin, reason, mode: "auto-switch", targetSymbol: ETH_SYMBOL };
-                }
-            }
-        }
-
-        // ═══════════════════════════════════════════
-        // 模式 B — BTC-SOL 联动共振
-        // ═══════════════════════════════════════════
-        if (snap.btcConnected && snap.btcAskWallVol > 0 && snap.askWallVol > 0) {
-            const btcImbalance = snap.btcBuyDelta / snap.btcAskWallVol;
-            const solImbalance = snap.buyDelta / snap.askWallVol;
-
-            if (btcImbalance > BTC_IMBALANCE_RATIO && solImbalance > SOL_RESONANCE_RATIO) {
-                if (!checkCvdDirection(snap.recentDeltaDirs, "long", CVD_CONFIRM_TICKS)) return null;
-                const reason = `🔥 联动多: BTC=${btcImbalance.toFixed(2)}x SOL=${solImbalance.toFixed(2)}x | CVD✅`;
-                log(`🎯 ${reason}`);
-                this.lastSignalTs = now;
-                return { side: "long", price: snap.price, margin, reason, mode: "resonance", targetSymbol: SYMBOL };
-            }
-        }
-
-        if (ALLOW_SHORT && snap.btcConnected && snap.btcBidWallVol > 0 && snap.bidWallVol > 0) {
-            const btcSellImbalance = snap.btcSellDelta / snap.btcBidWallVol;
-            const solSellImbalance = snap.sellDelta / snap.bidWallVol;
-
-            if (btcSellImbalance > BTC_IMBALANCE_RATIO && solSellImbalance > SOL_RESONANCE_RATIO) {
-                if (!checkCvdDirection(snap.recentDeltaDirs, "short", CVD_CONFIRM_TICKS)) return null;
-                const reason = `🔥 联动空: BTC=${btcSellImbalance.toFixed(2)}x SOL=${solSellImbalance.toFixed(2)}x | CVD✅`;
-                log(`🎯 ${reason}`);
-                this.lastSignalTs = now;
-                return { side: "short", price: snap.price, margin, reason, mode: "resonance", targetSymbol: SYMBOL };
-            }
-        }
-
-        // ═══════════════════════════════════════════
-        // 模式 A — SOL 独立狙击: 5.5x + 效率双重校验
-        // ═══════════════════════════════════════════
-        if (snap.askWallVol > 0) {
-            const buyImbalance = snap.buyDelta / snap.askWallVol;
-            if (
-                buyImbalance > IMBALANCE_RATIO &&
-                snap.efficiency > EFFICIENCY_ABS_THRESHOLD &&
-                snap.efficiency > snap.avgEfficiency
-            ) {
-                if (!checkCvdDirection(snap.recentDeltaDirs, "long", CVD_CONFIRM_TICKS)) return null;
-                const reason = `🚀 狙击多: ${buyImbalance.toFixed(2)}x 效率=${snap.efficiency.toFixed(4)} | CVD✅`;
-                log(`🎯 ${reason}`);
-                this.lastSignalTs = now;
-                return { side: "long", price: snap.price, margin, reason, mode: "sniper", targetSymbol: SYMBOL };
-            }
-        }
-
-        if (ALLOW_SHORT && snap.bidWallVol > 0) {
-            const sellImbalance = snap.sellDelta / snap.bidWallVol;
-            if (
-                sellImbalance > IMBALANCE_RATIO &&
-                snap.efficiency > EFFICIENCY_ABS_THRESHOLD &&
-                snap.efficiency > snap.avgEfficiency
-            ) {
-                if (!checkCvdDirection(snap.recentDeltaDirs, "short", CVD_CONFIRM_TICKS)) return null;
-                const reason = `🔻 狙击空: ${sellImbalance.toFixed(2)}x 效率=${snap.efficiency.toFixed(4)} | CVD✅`;
-                log(`🎯 ${reason}`);
-                this.lastSignalTs = now;
-                return { side: "short", price: snap.price, margin, reason, mode: "sniper", targetSymbol: SYMBOL };
-            }
+        // --- LONG: 突破最近 2 根 15M 最高价 + BTC 买压主导 ---
+        if (
+            ethPrice > highest2_15m &&
+            btcBuyRatio >= BTC_ENTRY_RATIO
+        ) {
+            this.lastTradeTs = now;
+            const reason =
+                `🐋 15M突破LONG: $${ethPrice.toFixed(2)} > H2=${highest2_15m.toFixed(2)} | ` +
+                `BTC买压=${btcBuyRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
+                `Guard=${prev15mLow.toFixed(2)}-1.5pt`;
+            log(reason);
+            return {
+                side: "long",
+                price: ethPrice,
+                margin,
+                reason,
+                targetSymbol: ETH_SYMBOL,
+            };
         }
 
         return null;

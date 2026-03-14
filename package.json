@@ -1,7 +1,7 @@
 {
     "name": "dollarprinter",
-    "version": "52.4.0",
-    "description": "V52.4 Logic Leader — Proportional Entry + Fee Shield 5pt + 15s Hold + $18 Margin (Bun/TypeScript)",
+    "version": "66.0.0",
+    "description": "V66 LEVIATHAN — 15M Structural Trend + Iron Guard + Zero-Risk Gate + Compounding (Bun/TypeScript)",
     "scripts": {
         "dev": "bun run src/main.ts",
         "start": "bun run src/main.ts"

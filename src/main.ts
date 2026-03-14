@@ -1,27 +1,24 @@
 /**
- * 🧠 Dollarprinter V52.4 — Logic Leader
+ * 🐋 Dollarprinter V66 — LEVIATHAN
  * ═══════════════════════════════════════
- * 双条件入场: A(BTC4.0x+ETH1.0) B(BTC2.5x+ETH2.0)
- * MARKET IOC + Fee Shield 5pt + 15s持仓保护 + 20min超时
+ * 15M 结构性趋势交易 + Iron Guard 出场
+ * MARKET IOC + Zero-Risk Gate + 复利保证金
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
 import { CausalStrategy } from "./strategy";
 import { BitunixExecutor } from "./executor";
+import { CandleTracker } from "./candles";
 import { notifyTG, pollTGCommands } from "./telegram";
 import {
-    LEVERAGE, MARGIN_DEFAULT, IMBALANCE_RATIO,
-    SL_POINTS, TP_POINTS, FEE_SHIELD_POINTS, MIN_HOLD_MS,
-    HARD_TIMEOUT_MS, MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
-    CVD_CONFIRM_TICKS,
+    LEVERAGE, MARGIN_DEFAULT,
+    SL_POINTS, STRUCT_SL_BUFFER, ZERO_RISK_THRESHOLD,
+    MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
     MAX_DAILY_TRADES, MAX_DAILY_LOSS,
-    BTC_IMBALANCE_RATIO, SOL_RESONANCE_RATIO,
-    BTC_LEAD_STRONG, ETH_EFF_WITH_STRONG_BTC,
-    BTC_LEAD_WEAK, ETH_EFF_WITH_WEAK_BTC,
-    EFFICIENCY_ABS_THRESHOLD,
-    SOL_MIN_EFFICIENCY, ETH_MIN_EFFICIENCY,
-    SYMBOL, BTC_SYMBOL, ETH_SYMBOL,
+    BTC_ENTRY_RATIO,
+    ETH_SYMBOL,
     SYMBOL_PRECISION,
+    getMargin,
 } from "./config";
 
 function log(msg: string) {
@@ -29,70 +26,62 @@ function log(msg: string) {
     console.log(`${ts} [main] ${msg}`);
 }
 
-class CausalArbitrageBot {
+class LeviathanBot {
     private ws: BitunixWSEngine;
     private strategy: CausalStrategy;
     private executor: BitunixExecutor;
+    private candles: CandleTracker;
 
-    private running = false;
     private paused = true;
     private startTime = Date.now();
-
     private dailyTrades = 0;
     private dailyPnl = 0;
     private totalTrades = 0;
     private totalPnl = 0;
-    private dailyResetDate = new Date().toDateString();
+    private currentBalance = 0;
 
     constructor() {
         const apiKey = process.env.BITUNIX_API_KEY || "";
         const secretKey = process.env.BITUNIX_SECRET_KEY || "";
         if (!apiKey || !secretKey) {
-            log("❌ 缺少 BITUNIX_API_KEY 或 BITUNIX_SECRET_KEY");
+            log("❌ 缺少 BITUNIX_API_KEY / BITUNIX_SECRET_KEY");
             process.exit(1);
         }
-
         this.ws = new BitunixWSEngine();
         this.strategy = new CausalStrategy();
         this.executor = new BitunixExecutor(apiKey, secretKey);
+        this.candles = new CandleTracker(ETH_SYMBOL);
     }
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🎯 Dollarprinter V52.4 — Logic Leader");
-        log("  🔥 双条件入场 + 联动共振 + 独立狙击");
+        log("  🐋 Dollarprinter V66 — LEVIATHAN");
+        log("  🔥 15M 结构性趋势交易 + Iron Guard");
         log("  📡 三币种: SOL + BTC + ETH");
         log("════════════════════════════════════════════");
 
         this.ws.start();
-        this.running = true;
-
-        log("⏳ 等待 Bitunix WS 就绪 (SOL + BTC + ETH 三通道)...");
+        this.candles.start();
         await this.waitForData();
-        log("✅ 数据就绪!");
 
-        await this.executor.syncPositions();
         const bal = await this.executor.getBalance();
+        this.currentBalance = bal;
+        const margin = getMargin(bal);
 
-        log("════════════════════════════════════════════");
         log(`  💰 余额: $${bal.toFixed(2)}`);
-        log(`  📊 ${SYMBOL} | ${LEVERAGE}x 杠杆 | M=$${MARGIN_DEFAULT}`);
-        log(`  🎯 A: SOL ${IMBALANCE_RATIO}x 独立 | 效率>${EFFICIENCY_ABS_THRESHOLD}`);
-        log(`  🔥 B: BTC ${BTC_IMBALANCE_RATIO}x + SOL ${SOL_RESONANCE_RATIO}x 联动`);
-        log(`  🚀 C①: BTC≥${BTC_LEAD_STRONG}x + ETH效率≥${ETH_EFF_WITH_STRONG_BTC}`);
-        log(`  🚀 C②: BTC≥${BTC_LEAD_WEAK}x + ETH效率≥${ETH_EFF_WITH_WEAK_BTC}`);
-        log(`  🛡️ SL=${SL_POINTS}pt | TP=${TP_POINTS}pt | FeeShield≥${FEE_SHIELD_POINTS}pt`);
-        log(`  ⏱️ Hold≥${MIN_HOLD_MS / 1000}s | 超时=${HARD_TIMEOUT_MS / 60_000}min | Spread≤${MAX_SPREAD_POINTS}pt`);
-        log(`  📋 CVD=${CVD_CONFIRM_TICKS}tick | MARKET IOC入场`);
-        log(`  ⏰ 日限${MAX_DAILY_TRADES}单`);
+        log(`  📊 ${ETH_SYMBOL} | ${LEVERAGE}x 杠杆 | M=$${margin}`);
+        log(`  🐋 入场: 15M突破 + BTC≥${BTC_ENTRY_RATIO}x`);
+        log(`  🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt`);
+        log(`  ⚔️ Iron Guard: prev15M ±${STRUCT_SL_BUFFER}pt (1M确认)`);
+        log(`  💎 复利: $20→$60→$150→$400`);
         log("════════════════════════════════════════════");
 
         await notifyTG(
-            `🎯 *Dollarprinter V52.4 — Logic Leader*\n` +
-            `余额: $${bal.toFixed(2)} | ${LEVERAGE}x | M=$${MARGIN_DEFAULT}\n` +
-            `🛡️ Fee≥5pt | SL=8pt | TP=25pt | Hold≥15s\n` +
-            `🚀 C①: BTC≥${BTC_LEAD_STRONG}x+ETH≥1.0 | C②: BTC≥${BTC_LEAD_WEAK}x+ETH≥2.0\n` +
-            `⏰ 超时${HARD_TIMEOUT_MS / 60_000}min | CVD ${CVD_CONFIRM_TICKS}tick\n` +
+            `🐋 *Dollarprinter V66 — LEVIATHAN*\n` +
+            `余额: $${bal.toFixed(2)} | ${LEVERAGE}x | M=$${margin}\n` +
+            `🐋 15M突破 + BTC≥${BTC_ENTRY_RATIO}x\n` +
+            `🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt\n` +
+            `⚔️ Iron Guard: 15M结构 ±${STRUCT_SL_BUFFER}pt\n` +
             `⚠️ 暂停中, 发 1 激活`,
         );
 
@@ -105,7 +94,7 @@ class CausalArbitrageBot {
                 `🔄 *仓位自动接管*\n` +
                 `${coinName} ${this.executor.positionSide.toUpperCase()} ` +
                 `${this.executor.positionQty} @ $${this.executor.entryPrice.toFixed(prec.price)}\n` +
-                `新版无缝接管, 出场逻辑已激活`,
+                `Iron Guard 出场逻辑已激活`,
             );
         }
 
@@ -113,7 +102,11 @@ class CausalArbitrageBot {
         this.positionLoop();
         this.tgCommandLoop();
         setInterval(() => this.hourlyReport(), 3600_000);
-        log("🟢 V52.4 就绪 — 等待 CEO 激活 (Telegram 发 1)");
+        // 每 60s 更新余额 (用于复利计算)
+        setInterval(async () => {
+            this.currentBalance = await this.executor.getBalance();
+        }, 60_000);
+        log("🟢 V66 就绪 — 等待 CEO 激活 (Telegram 发 1)");
     }
 
     private async waitForData() {
@@ -122,136 +115,129 @@ class CausalArbitrageBot {
             if (s.connected && s.price > 0) break;
             await Bun.sleep(1000);
         }
-        await Bun.sleep(5000);
+        log("📡 WS 数据流就绪");
+
+        // 等 K线数据
+        let waited = 0;
+        while (!this.candles.ready && waited < 30) {
+            await Bun.sleep(1000);
+            waited++;
+        }
+        if (this.candles.ready) {
+            log("📊 K线数据就绪");
+        } else {
+            log("⚠️ K线数据超时, 继续启动 (后台轮询中)");
+        }
     }
 
     // ═══════════════════════════════════════
-    // 策略循环 — 100ms 扫描
+    // 策略循环 — 15M 结构性突破
     // ═══════════════════════════════════════
 
-    private async strategyLoop() {
-        while (this.running) {
-            await Bun.sleep(100);
-
-            this.checkDailyReset();
-            if (this.paused || this.executor.inPosition) continue;
-            if (this.dailyTrades >= MAX_DAILY_TRADES) continue;
-            if (this.dailyPnl <= -MAX_DAILY_LOSS) continue;
+    private strategyLoop() {
+        setInterval(async () => {
+            if (this.paused) return;
+            if (this.executor.inPosition) return;
+            if (this.dailyTrades >= MAX_DAILY_TRADES) return;
+            if (this.dailyPnl <= -MAX_DAILY_LOSS) return;
 
             const snap = this.ws.getSnapshot();
-            if (!snap.connected) continue;
+            const sig = this.strategy.evaluate(snap, this.candles, this.currentBalance);
+            if (!sig) return;
 
-            const sig = this.strategy.evaluate(snap);
-            if (!sig) continue;
-
-            // 进场 — 根据 targetSymbol 动态切换
-            const modeLabels: Record<string, string> = {
-                "sniper": "🎯独立狙击",
-                "resonance": "🔥联动共振",
-                "auto-switch": "🚀BTC领路",
-            };
-            const modeLabel = modeLabels[sig.mode] || sig.mode;
-            const coinName = sig.targetSymbol.replace("USDT", "");
             const prec = SYMBOL_PRECISION[sig.targetSymbol] || { qty: 1, price: 3 };
+            const coinName = sig.targetSymbol.replace("USDT", "");
 
             await notifyTG(
-                `${modeLabel} *${sig.side.toUpperCase()} ${coinName}*\n${sig.reason}\n` +
+                `🐋 *${sig.side.toUpperCase()} ${coinName}*\n${sig.reason}\n` +
                 `@ ${sig.price.toFixed(prec.price)} | M=$${sig.margin}`,
             );
 
             const ok = await this.executor.atomicEntry(sig.side, sig.price, sig.margin, sig.targetSymbol, notifyTG);
             if (ok) {
-                log(`✅ ${modeLabel} ${sig.side.toUpperCase()} ${coinName} @ ${sig.price.toFixed(prec.price)} M=$${sig.margin}`);
+                log(`✅ 🐋 ${sig.side.toUpperCase()} ${coinName} @ ${sig.price.toFixed(prec.price)} M=$${sig.margin}`);
 
-                // V52.4 延迟诊断 TG 通知
+                // 延迟诊断 TG 通知
                 let diagMsg =
                     `📡 *订单诊断*\n` +
                     `⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n` +
                     `[DRIFT] Signal: ${this.executor.signalPrice.toFixed(prec.price)} | Fill: ${this.executor.entryPrice.toFixed(prec.price)} | Slip: ${this.executor.lastSlippage.toFixed(prec.price)}pt`;
                 if (this.executor.highSlippage) {
-                    diagMsg += `\n🚨 *HIGH SLIPPAGE* — 15s Hold 已取消, 激进出场 BE+1pt`;
+                    diagMsg += `\n🚨 *HIGH SLIPPAGE* — 激进出场 BE+1pt`;
                 }
                 await notifyTG(diagMsg);
 
                 await Bun.sleep(500);
                 await this.executor.syncPositions();
             }
-        }
+        }, 500); // 每 500ms 检查 (15M策略不需太快)
     }
 
     // ═══════════════════════════════════════
-    // 持仓循环 — 200ms 监控
+    // 持仓监控 — Iron Guard
     // ═══════════════════════════════════════
 
-    private async positionLoop() {
-        while (this.running) {
-            await Bun.sleep(200);
-            if (!this.executor.inPosition) continue;
+    private positionLoop() {
+        setInterval(async () => {
+            if (!this.executor.inPosition) return;
 
-            const snap = this.ws.getSnapshot();
-            if (!snap.connected || snap.price <= 0) continue;
-
-            // 根据当前持仓交易对选择正确的价格
-            const currentPrice = this.executor.positionSymbol === ETH_SYMBOL
-                ? snap.ethPrice
-                : snap.price;
-
-            if (currentPrice <= 0) continue;
+            const s = this.ws.getSnapshot();
+            const currentPrice = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
+            if (currentPrice <= 0) return;
 
             const r = await this.executor.checkPosition(
                 currentPrice,
-                snap.isEfficiencyDecay,
-                snap.recentVol,
-                snap.avgVol,
-                snap.efficiency,
+                this.candles.prev15mHigh,
+                this.candles.prev15mLow,
+                this.candles.last1mClose,
             );
+
             if (r.closed) {
                 this.dailyTrades++;
                 this.dailyPnl += r.netPnlU;
                 this.totalTrades++;
                 this.totalPnl += r.netPnlU;
-
                 const emoji = r.netPnlU > 0 ? "✅" : "❌";
-                const coinName = (r.symbol || "SOL").replace("USDT", "");
                 await notifyTG(
-                    `${emoji} *平仓 ${coinName}* ${r.reason}\n` +
+                    `${emoji} *${r.symbol.replace("USDT", "")} 平仓*\n` +
+                    `${r.reason}\n` +
                     `净PnL: ${r.netPnlU >= 0 ? "+" : ""}${r.netPnlU.toFixed(2)}U\n` +
-                    `今日: ${this.dailyTrades}单 | ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(2)}U`,
+                    `今日: ${this.dailyTrades}单 ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(2)}U`,
                 );
-
-                await Bun.sleep(1000);
+            } else {
                 await this.executor.syncPositions();
             }
-        }
+        }, 1000);
     }
 
     // ═══════════════════════════════════════
-    // Telegram 指令
+    // TG 命令
     // ═══════════════════════════════════════
 
-    private async tgCommandLoop() {
+    private tgCommandLoop() {
         let lastId = 0;
-        while (this.running) {
-            await Bun.sleep(2000);
+        setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
                 "1": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V52.4 Logic Leader 激活*\n双条件+联动+狙击 扫描中...`);
+                    await notifyTG(`✅ *V66 LEVIATHAN 激活*\n15M 结构性趋势扫描中...`);
                 },
                 "/start": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V52.4 Logic Leader 激活*\n双条件+联动+狙击 扫描中...`);
+                    await notifyTG(`✅ *V66 LEVIATHAN 激活*\n15M 结构性趋势扫描中...`);
                 },
                 "0": async () => {
                     this.paused = true;
-                    await notifyTG("🔴 *V52.2 暂停*");
+                    await notifyTG("🔴 *V66 暂停*");
                 },
                 "/stop": async () => {
                     this.paused = true;
-                    await notifyTG("🔴 *V52.4 暂停*");
+                    await notifyTG("🔴 *V66 暂停*");
                 },
                 s: async () => { await this.sendStatus(); },
                 "/status": async () => { await this.sendStatus(); },
+                d: async () => { await this.sendDiagnostics(); },
+                "/diag": async () => { await this.sendDiagnostics(); },
                 x: async () => {
                     const s = this.ws.getSnapshot();
                     const price = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
@@ -282,106 +268,77 @@ class CausalArbitrageBot {
                 },
                 h: async () => {
                     await notifyTG(
-                        `📖 *V52.4 Logic Leader*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
+                        `📖 *V66 LEVIATHAN*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
                 "/help": async () => {
                     await notifyTG(
-                        `📖 *V52.4 Logic Leader*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
+                        `📖 *V66 LEVIATHAN*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
-                d: async () => { await this.sendDiagnostics(); },
-                "/diag": async () => { await this.sendDiagnostics(); },
             });
-        }
+        }, 2000);
     }
 
     // ═══════════════════════════════════════
-    // 📡 连线诊断报告 — TG 命令 `d`
+    // 📡 诊断报告
     // ═══════════════════════════════════════
 
     private async sendDiagnostics() {
         const s = this.ws.getSnapshot();
+        const cs = this.candles.getSnapshot();
 
-        let m = `📡 *【连线诊断报告】*\n`;
+        let m = `📡 *【V66 诊断报告】*\n`;
         m += `──────────────\n`;
-
-        // WS 数据源延迟
-        m += `🕒 *数据源延迟 (Bitunix WS → Bot):*\n`;
-        m += `   当前: ${s.wsLatencyMs}ms | 平均: ${s.wsLatencyAvg}ms | 最大: ${s.wsLatencyMax}ms\n`;
-        if (s.wsLatencyAvg > 200) {
-            m += `   ⚠️ 延迟过高，请检查伺服器网路\n`;
-        } else {
-            m += `   🟢 数据极速\n`;
-        }
-
-        // 执行延迟
-        m += `\n⚡ *执行延迟 (Bot → Bitunix API):*\n`;
+        m += `📊 *15M K线:* ${cs.count15m}根 | 1M: ${cs.count1m}根\n`;
+        m += `   H2=${cs.highest2_15m.toFixed(2)} | L2=${cs.lowest2_15m.toFixed(2)}\n`;
+        m += `   prevH=${cs.prev15mHigh.toFixed(2)} | prevL=${cs.prev15mLow.toFixed(2)}\n`;
+        m += `   1M close=$${cs.last1mClose.toFixed(2)}\n`;
+        m += `──────────────\n`;
+        m += `🕒 WS延迟: ${s.wsLatencyMs}ms (avg=${s.wsLatencyAvg}ms)\n`;
         if (this.executor.lastEntryMs > 0) {
-            m += `   Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n`;
-            if (this.executor.lastEntryMs > 500) {
-                m += `   ⚠️ Bitunix 回报缓慢\n`;
-            } else {
-                m += `   🟢 接口正常\n`;
-            }
-        } else {
-            m += `   尚无订单数据\n`;
+            m += `⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n`;
+            m += `Slip: ${this.executor.lastSlippage.toFixed(2)}pt\n`;
         }
-
-        // 滑点
-        m += `\n📉 *滑点诊断:*\n`;
-        if (this.executor.signalPrice > 0) {
-            m += `   Signal: ${this.executor.signalPrice.toFixed(2)} → Fill: ${this.executor.entryPrice.toFixed(2)}\n`;
-            m += `   Slippage: ${this.executor.lastSlippage.toFixed(2)}pt${this.executor.highSlippage ? " 🚨 HIGH" : " 🟢"}\n`;
-            if (this.executor.highSlippage) {
-                m += `   ⚠️ 激进出场模式已启动 (BE+1pt)\n`;
-            }
-        } else {
-            m += `   尚无成交数据\n`;
+        if (this.executor.inPosition) {
+            m += `──────────────\n`;
+            m += `⚔️ Guard: $${this.executor.structGuardPrice.toFixed(2)}\n`;
+            m += `🛡️ Zero-Risk: ${this.executor.zeroRiskTriggered ? "✅已触发" : "❌未触发"}\n`;
         }
-
-        // 高延迟统计
-        m += `\n📊 *累计统计:*\n`;
-        m += `   高延迟(>200ms): ${s.highLatencyCount}次\n`;
-        m += `──────────────`;
 
         await notifyTG(m);
     }
 
     // ═══════════════════════════════════════
-    // 状态面板 — V52.4
+    // 状态面板
     // ═══════════════════════════════════════
 
     private async sendStatus() {
         const s = this.ws.getSnapshot();
         const b = await this.executor.getBalance();
+        this.currentBalance = b;
+        const margin = getMargin(b);
         const uptimeMs = Date.now() - this.startTime;
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
+        const cs = this.candles.getSnapshot();
 
-        let m = `📊 *V52.4 Logic Leader*\n`;
+        let m = `🐋 *V66 LEVIATHAN*\n`;
         m += `──────────────\n`;
-        m += `💰 余额: $${b.toFixed(2)}\n`;
+        m += `💰 余额: $${b.toFixed(2)} | M=$${margin}\n`;
         m += `🔌 WS: ${s.connected ? "🟢" : "🔴"} | ${this.paused ? "🔴暂停" : "🟢运行"}\n`;
         m += `⚙️ 运行: ${uptimeH}h${uptimeM}m | 扫描: ${this.strategy.getScanCount()}\n`;
         m += `──────────────\n`;
-        m += `🛡️ Fee≥${FEE_SHIELD_POINTS}pt | SL=${SL_POINTS}pt | TP=${TP_POINTS}pt\n`;
-        m += `⏱️ Hold≥${MIN_HOLD_MS / 1000}s | 超时=${HARD_TIMEOUT_MS / 60_000}min\n`;
-        m += `🚀 C①: BTC≥${BTC_LEAD_STRONG}x+ETH≥1.0 | C②: BTC≥${BTC_LEAD_WEAK}x+ETH≥2.0\n`;
+        m += `🐋 15M突破 + BTC≥${BTC_ENTRY_RATIO}x\n`;
+        m += `📊 H2=$${cs.highest2_15m.toFixed(2)} | L2=$${cs.lowest2_15m.toFixed(2)}\n`;
+        m += `⚔️ Guard: prevH=$${cs.prev15mHigh.toFixed(2)} | prevL=$${cs.prev15mLow.toFixed(2)}\n`;
+        m += `🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt\n`;
         m += `──────────────\n`;
-        m += `📈 SOL $${s.price.toFixed(3)} | 效率${s.efficiency.toFixed(4)}\n`;
-        m += `   买:${s.buyDelta.toFixed(1)} 卖:${s.sellDelta.toFixed(1)} | 墙A:${s.askWallVol.toFixed(1)} B:${s.bidWallVol.toFixed(1)}\n`;
-        m += `💎 ETH $${s.ethPrice.toFixed(2)} | 效率${s.ethEfficiency.toFixed(4)} | Sp=${s.ethSpread.toFixed(3)} | D3=${s.ethTop3Depth.toFixed(1)}\n`;
+        m += `💎 ETH $${s.ethPrice.toFixed(2)} | Sp=${s.ethSpread.toFixed(3)}\n`;
         m += `₿ BTC $${s.btcPrice.toFixed(1)} | 买:${s.btcBuyDelta.toFixed(1)} 卖:${s.btcSellDelta.toFixed(1)}\n`;
         m += `──────────────\n`;
         m += `📋 今日: ${this.dailyTrades}/${MAX_DAILY_TRADES}单 | ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(2)}U\n`;
         m += `📋 累计: ${this.totalTrades}单 | ${this.totalPnl >= 0 ? "+" : ""}${this.totalPnl.toFixed(2)}U\n`;
-        m += `──────────────\n`;
-        m += `📡 WS延迟: ${s.wsLatencyMs}ms (avg=${s.wsLatencyAvg}ms max=${s.wsLatencyMax}ms)\n`;
-        if (s.highLatencyCount > 0) m += `⚠️ 高延迟(>200ms): ${s.highLatencyCount}次\n`;
-        if (this.executor.lastEntryMs > 0) {
-            m += `⏱ 上次Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms | Slip: ${this.executor.lastSlippage.toFixed(2)}pt\n`;
-        }
 
         if (this.executor.inPosition) {
             const prec = SYMBOL_PRECISION[this.executor.positionSymbol] || { qty: 1, price: 3 };
@@ -395,7 +352,9 @@ class CausalArbitrageBot {
             m += `──────────────\n`;
             m += `🔥 ${coinName} ${this.executor.positionSide.toUpperCase()} @ $${this.executor.entryPrice.toFixed(prec.price)}\n`;
             m += `浮盈: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(prec.price)}pt (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(3)}%)\n`;
-            m += `持仓: ${holdMin}min / ${HARD_TIMEOUT_MS / 60_000}min\n`;
+            m += `持仓: ${holdMin}min\n`;
+            m += `⚔️ Guard: $${this.executor.structGuardPrice.toFixed(prec.price)}\n`;
+            m += `🛡️ ZR: ${this.executor.zeroRiskTriggered ? "✅已触发" : "❌"}\n`;
         }
 
         await notifyTG(m);
@@ -407,14 +366,14 @@ class CausalArbitrageBot {
         const uptimeMs = Date.now() - this.startTime;
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
+        const cs = this.candles.getSnapshot();
 
-        let m = `💓 *V52.4 Logic Leader*\n`;
+        let m = `💓 *V66 LEVIATHAN*\n`;
         m += `${uptimeH}h${uptimeM}m | ${this.paused ? "🔴" : "🟢"}\n`;
-        m += `SOL $${s.price.toFixed(3)} eff=${s.efficiency.toFixed(3)}\n`;
-        m += `ETH $${s.ethPrice.toFixed(2)} eff=${s.ethEfficiency.toFixed(3)} sp=${s.ethSpread.toFixed(2)}\n`;
-        m += `BTC $${s.btcPrice.toFixed(1)} | 余$${b.toFixed(2)}\n`;
+        m += `ETH $${s.ethPrice.toFixed(2)} | BTC $${s.btcPrice.toFixed(1)}\n`;
+        m += `15M: H2=$${cs.highest2_15m.toFixed(2)} L2=$${cs.lowest2_15m.toFixed(2)}\n`;
+        m += `余$${b.toFixed(2)} | M=$${getMargin(b)}\n`;
         m += `今${this.dailyTrades}单 ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U | 累${this.totalTrades}单 ${this.totalPnl >= 0 ? "+" : ""}${this.totalPnl.toFixed(1)}U`;
-        m += `\n📡 WS: ${s.wsLatencyAvg}ms(avg) ${s.wsLatencyMax}ms(max) ${s.highLatencyCount}❗`;
 
         if (this.executor.inPosition) {
             const curPrice = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
@@ -422,27 +381,18 @@ class CausalArbitrageBot {
                 ? curPrice - this.executor.entryPrice
                 : this.executor.entryPrice - curPrice;
             const coinName = this.executor.positionSymbol.replace("USDT", "");
-            m += `\n🔥 ${coinName} ${this.executor.positionSide.toUpperCase()} ${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)}pt`;
+            m += `\n🔥 ${coinName} ${this.executor.positionSide.toUpperCase()} ${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)}pt | ZR:${this.executor.zeroRiskTriggered ? "✅" : "❌"}`;
         }
 
         await notifyTG(m);
-    }
-
-    private checkDailyReset() {
-        const today = new Date().toDateString();
-        if (today !== this.dailyResetDate) {
-            log(`🔄 日统计重置: ${this.dailyTrades}单 ${this.dailyPnl.toFixed(2)}U`);
-            this.dailyTrades = 0;
-            this.dailyPnl = 0;
-            this.dailyResetDate = today;
-        }
     }
 }
 
 // ═══════════════════════════════════════
 // 启动
 // ═══════════════════════════════════════
-const bot = new CausalArbitrageBot();
+
+const bot = new LeviathanBot();
 process.on("SIGINT", () => {
     log("🛑 停止...");
     process.exit(0);

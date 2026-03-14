@@ -1,97 +1,86 @@
 /**
- * ⚙️ V52.4 "Logic Leader" — 配置参数
+ * ⚙️ V66 "LEVIATHAN" — 配置参数
  * ═══════════════════════════════════════
- * 双条件入场 + Fee Shield 5pt + 15s持仓保护 + $18保证金
+ * 15M 结构性趋势交易 + Iron Guard + 复利
  */
 
 // ═══════════════════════════════════════
 // 交易对 & API — 三币种监控
 // ═══════════════════════════════════════
 export const SYMBOL = "SOLUSDT";               // 默认主交易对
-export const ETH_SYMBOL = "ETHUSDT";           // ETH 备选交易对
+export const ETH_SYMBOL = "ETHUSDT";           // ETH 主力交易对
 export const BTC_SYMBOL = "BTCUSDT";           // BTC 联动监控
 export const BITUNIX_BASE = "https://fapi.bitunix.com";
 export const BITUNIX_WS_PUBLIC = "wss://fapi.bitunix.com/public/";
 
 // ═══════════════════════════════════════
-// 交易对精度表 (动态切换用)
+// 交易对精度表
 // ═══════════════════════════════════════
 export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = {
-    SOLUSDT: { qty: 1, price: 3 },             // SOL: 0.1 SOL, $xxx.xxx
-    ETHUSDT: { qty: 3, price: 2 },             // ETH: 0.001 ETH, $xxxx.xx
+    SOLUSDT: { qty: 1, price: 3 },
+    ETHUSDT: { qty: 3, price: 2 },
 };
 
 // ═══════════════════════════════════════
-// 核心参数 — V52.2 Fee Shield Recovery
+// 核心参数 — V66 LEVIATHAN
 // ═══════════════════════════════════════
 export const LEVERAGE = 200;
-export const ALLOW_SHORT = true;               // 多空双向开关
-export const SL_POINTS = 8.0;                  // 固定 8 点硬止损 (永远有效)
-export const TP_POINTS = 25.0;                 // 固定 25 点止盈
-export const FEE_SHIELD_POINTS = 5.0;          // 🛡️ Fee Shield: 算法出场必须 >= 5pt 才允许 (V52.4)
-export const MIN_HOLD_MS = 15_000;             // ⏱️ 15 秒最低持仓 (仅硬SL例外) (V52.4)
-export const HARD_TIMEOUT_MS = 1_200_000;      // ⏰ 20 分钟硬超时 (1,200,000ms)
+export const ALLOW_SHORT = true;
+export const SL_POINTS = 8.0;                  // 初始硬止损 8pt (永远有效)
+export const TAKER_FEE = 0.0004;
+
+// ═══════════════════════════════════════
+// 15M 结构性入场
+// ═══════════════════════════════════════
+export const BTC_ENTRY_RATIO = 4.0;            // BTC Lead 入场门槛
+export const CANDLE_LOOKBACK = 2;              // 看最近 2 根 15M K线
+export const CANDLE_POLL_MS = 30_000;          // K线轮询间隔 30s
+
+// ═══════════════════════════════════════
+// Iron Guard — 结构性出场
+// ═══════════════════════════════════════
+export const STRUCT_SL_BUFFER = 1.5;           // 结构止损缓冲 (prev 15M high/low ±1.5pt)
+
+// ═══════════════════════════════════════
+// Zero-Risk Gate
+// ═══════════════════════════════════════
+export const ZERO_RISK_THRESHOLD = 20.0;       // 利润 ≥ 20pt → SL移到entry+1pt
+export const ZERO_RISK_SL_OFFSET = 1.0;        // Zero-Risk SL偏移
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate
 // ═══════════════════════════════════════
-export const MAX_SPREAD_POINTS = 0.35;         // 价差 > 0.35pt 禁止进场
-export const MIN_DEPTH_ETH = 50;               // Top3 深度 < 50 ETH 禁止进场
+export const MAX_SPREAD_POINTS = 0.35;
+export const MIN_DEPTH_ETH = 50;
 
 // ═══════════════════════════════════════
-// BTC-SOL 联动共振参数 (模式 B)
+// 复利保证金阶梯
 // ═══════════════════════════════════════
-export const BTC_IMBALANCE_RATIO = 4.0;        // BTC: 联动共振 4.0x (V52.4)
-export const SOL_RESONANCE_RATIO = 2.5;        // SOL: 2.5 倍共振跟进
-export const IMBALANCE_RATIO = 5.5;            // SOL 独立: 5.5 倍绝对失衡
+export const MARGIN_DEFAULT = 20;              // 基础 $20 (余额 <$500)
+export const MARGIN_TIERS: { minBalance: number; margin: number }[] = [
+    { minBalance: 2000, margin: 400 },
+    { minBalance: 1000, margin: 150 },
+    { minBalance: 500,  margin: 60 },
+];
 
-// ═══════════════════════════════════════
-// BTC 领路自动切换参数 (模式 C)
-// ═══════════════════════════════════════
-// V52.4 双条件入场:
-//   条件 A: BTC >= 4.0x AND ETH效率 >= 1.0 (BTC 强力驱动)
-//   条件 B: BTC >= 2.5x AND ETH效率 >= 2.0 (ETH 强效率驱动)
-export const BTC_LEAD_STRONG = 4.0;            // 条件 A: BTC 强力 4.0x
-export const ETH_EFF_WITH_STRONG_BTC = 1.0;    // 条件 A: ETH效率 >= 1.0
-export const BTC_LEAD_WEAK = 2.5;              // 条件 B: BTC 弱力 2.5x
-export const ETH_EFF_WITH_WEAK_BTC = 2.0;      // 条件 B: ETH效率 >= 2.0
-export const SOL_MIN_EFFICIENCY = 1.0;         // SOL 最低效率门槛 (V52.4 放宽)
-export const ETH_MIN_EFFICIENCY = 1.0;         // ETH 效率门槛 (V52.4 放宽)
-
-// ═══════════════════════════════════════
-// 效率 & 进场门槛
-// ═══════════════════════════════════════
-export const EFFICIENCY_ABS_THRESHOLD = 2.0;   // 绝对效率门槛 (V52.4 放宽)
-export const EFFICIENCY_DECAY = 0.2;           // 效率衰竭阈值
-export const VOL_SPIKE_MULT = 3;               // 成交量暴增倍数
-
-// ═══════════════════════════════════════
-// CVD 方向一致性确认
-// ═══════════════════════════════════════
-export const CVD_CONFIRM_TICKS = 3;            // Delta 方向确认: 最近 3 笔必须方向一致
-
-// ═══════════════════════════════════════
-// 放量倒货止盈 (Dump Detection)
-// ═══════════════════════════════════════
-export const DUMP_EFF_THRESHOLD = 0.15;
-export const DUMP_VOL_MULT = 1.5;              // 成交量暴增 1.5 倍
-
-// ═══════════════════════════════════════
-// 仓位 & 风控
-// ═══════════════════════════════════════
-export const MARGIN_DEFAULT = 18;              // $18/单 (余额 $140 可扛 ~6 连亏) — V52.4
-export const TAKER_FEE = 0.0004;
+/** 根据余额自动计算保证金 */
+export function getMargin(balance: number): number {
+    for (const tier of MARGIN_TIERS) {
+        if (balance >= tier.minBalance) return tier.margin;
+    }
+    return MARGIN_DEFAULT;
+}
 
 // ═══════════════════════════════════════
 // 冷却 & 安全
 // ═══════════════════════════════════════
-export const COOLDOWN_MS = 15_000;
+export const COOLDOWN_MS = 30_000;             // V66: 冷却 30s (15M策略不需太短)
 export const WS_LAG_MAX_MS = 500;
 export const MAX_DAILY_TRADES = 10;
 export const MAX_DAILY_LOSS = 100;
 
 // ═══════════════════════════════════════
-// 效率追踪 (滑动窗口)
+// 效率追踪 (保留用于WS引擎)
 // ═══════════════════════════════════════
 export const EFFICIENCY_WINDOW = 100;
 export const AVG_VOL_WINDOW = 200;
@@ -100,4 +89,4 @@ export const AVG_VOL_WINDOW = 200;
 // 时段限制 (UTC+8)
 // ═══════════════════════════════════════
 export const TRADE_HOUR_START = 0;
-export const TRADE_HOUR_END = 19;
+export const TRADE_HOUR_END = 23;              // V66: 24h 趋势交易
