@@ -41,6 +41,7 @@ export class BitunixExecutor {
 
     private slOrderId = "";
     private currentSlPrice = 0;
+    private _entering = false;  // 🔒 入场锁: 防止竞态条件重复开仓
 
     tradeLog: any[] = [];
 
@@ -74,7 +75,9 @@ export class BitunixExecutor {
         targetSymbol: string = SYMBOL,
         onDepthFail?: (msg: string) => Promise<void>,
     ): Promise<boolean> {
-        if (this.inPosition) return false;
+        // 🔒 双重锁: inPosition + _entering 防止竞态条件
+        if (this.inPosition || this._entering) return false;
+        this._entering = true;  // 立即加锁，不等订单返回
 
         const prec = getPrecision(targetSymbol);
         const qty = +((margin * LEVERAGE) / currentPrice).toFixed(prec.qty);
@@ -99,6 +102,7 @@ export class BitunixExecutor {
         const ms = performance.now() - t0;
 
         if (!result) {
+            this._entering = false;  // 🔓 解锁
             log(`❌ MARKET 开仓失败 [${targetSymbol}]`);
             if (onDepthFail) {
                 await onDepthFail(`❌ MARKET 开仓失败 [${coinName}]`);
@@ -125,6 +129,7 @@ export class BitunixExecutor {
         log(`[DRIFT] SignalPrice: ${currentPrice.toFixed(prec.price)} | FillPrice: ${actualPrice.toFixed(prec.price)} | Slippage: ${slippage.toFixed(prec.price)}pt${this.highSlippage ? " 🚨 HIGH" : ""}`);
 
         this.inPosition = true;
+        this._entering = false;  // 🔓 解锁: inPosition 已接管保护
         this.positionSide = side;
         this.positionSymbol = targetSymbol;
         this.entryPrice = actualPrice;
