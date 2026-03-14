@@ -57,6 +57,85 @@ export class BitunixExecutor {
         this.secretKey = secretKey;
     }
 
+    // ═══ 🔄 启动时仓位恢复 — 新版部署不丢仓位 ═══
+    async recoverPositions(): Promise<boolean> {
+        const symbolsToCheck = [ETH_SYMBOL, SYMBOL];
+        log("🔄 检查现有仓位...");
+
+        for (const sym of symbolsToCheck) {
+            try {
+                const queryStr = "symbol" + sym;
+                const headers = this.sign(queryStr);
+                const res = await fetch(
+                    `${BITUNIX_BASE}/api/v1/futures/position/get_pending_positions?symbol=${sym}`,
+                    { headers: { ...headers, "Content-Type": "application/json", language: "en-US" } },
+                );
+                const data = (await res.json()) as any;
+                if (String(data?.code) !== "0") continue;
+
+                const positions = (data?.data ?? []).filter(
+                    (p: any) => (p.symbol || "").toUpperCase() === sym,
+                );
+
+                if (positions.length === 0) continue;
+
+                // 找到仓位! 聚合同方向的总量
+                let totalBuyQty = 0, totalSellQty = 0;
+                let avgEntryPrice = 0, entryPriceSum = 0, entryQtySum = 0;
+                let firstPosId = "";
+
+                for (const p of positions) {
+                    const side = String(p.side).toUpperCase();
+                    const qty = +(p.qty || p.positionAmt || 0);
+                    const entry = +(p.avgPrice || p.entryPrice || p.openPrice || 0);
+
+                    if (qty <= 0) continue;
+
+                    if (side === "BUY") {
+                        totalBuyQty += qty;
+                    } else {
+                        totalSellQty += qty;
+                    }
+
+                    if (entry > 0) {
+                        entryPriceSum += entry * qty;
+                        entryQtySum += qty;
+                    }
+
+                    if (!firstPosId && p.positionId) firstPosId = String(p.positionId);
+                }
+
+                const dominantSide = totalBuyQty >= totalSellQty ? "long" : "short";
+                const dominantQty = dominantSide === "long" ? totalBuyQty : totalSellQty;
+                avgEntryPrice = entryQtySum > 0 ? entryPriceSum / entryQtySum : 0;
+
+                if (dominantQty > 0 && avgEntryPrice > 0) {
+                    this.inPosition = true;
+                    this.positionSide = dominantSide;
+                    this.positionSymbol = sym;
+                    this.entryPrice = avgEntryPrice;
+                    this.positionQty = dominantQty;
+                    this.entryTs = Date.now();  // 用当前时间, 超时从接管开始算
+                    this.positionId = firstPosId;
+
+                    const prec = getPrecision(sym);
+                    const coinName = sym.replace("USDT", "");
+                    log(`🔄 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+                    log(`🔄 接管仓位: ${coinName} ${dominantSide.toUpperCase()}`);
+                    log(`🔄 数量: ${dominantQty} | 入场: $${avgEntryPrice.toFixed(prec.price)}`);
+                    log(`🔄 仓位数: ${positions.length} | posId: ${firstPosId}`);
+                    log(`🔄 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+                    return true;
+                }
+            } catch (e) {
+                log(`recoverPositions 异常 [${sym}]: ${e}`);
+            }
+        }
+
+        log("🔄 无现有仓位, 正常启动");
+        return false;
+    }
+
     // ═══ 签名 ═══
     private sign(queryParams = "", body = ""): Record<string, string> {
         const nonce = crypto.randomUUID().replace(/-/g, "");

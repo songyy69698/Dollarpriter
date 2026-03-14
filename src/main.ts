@@ -96,6 +96,19 @@ class CausalArbitrageBot {
             `⚠️ 暂停中, 发 1 激活`,
         );
 
+        // 🔄 启动时自动接管现有仓位
+        const recovered = await this.executor.recoverPositions();
+        if (recovered) {
+            const coinName = this.executor.positionSymbol.replace("USDT", "");
+            const prec = SYMBOL_PRECISION[this.executor.positionSymbol] || { qty: 1, price: 3 };
+            await notifyTG(
+                `🔄 *仓位自动接管*\n` +
+                `${coinName} ${this.executor.positionSide.toUpperCase()} ` +
+                `${this.executor.positionQty} @ $${this.executor.entryPrice.toFixed(prec.price)}\n` +
+                `新版无缝接管, 出场逻辑已激活`,
+            );
+        }
+
         this.strategyLoop();
         this.positionLoop();
         this.tgCommandLoop();
