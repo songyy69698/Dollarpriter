@@ -175,8 +175,6 @@ export class BitunixExecutor {
             side: side === "long" ? "BUY" : "SELL",
             orderType: "MARKET",
             qty: qty.toString(),
-            tradeSide: "OPEN",
-            effect: "IOC",
             clientId: tag,
         };
 
@@ -250,8 +248,6 @@ export class BitunixExecutor {
             side: closeSide,
             orderType: "STOP_MARKET",
             qty: qty.toFixed(prec.qty),
-            tradeSide: "CLOSE",
-            effect: "GTC",
             triggerPrice: triggerPrice.toFixed(prec.price),
             stopType: "LAST",
         };
@@ -460,7 +456,7 @@ export class BitunixExecutor {
                 if (pos.stopOrderId) await this.cancelOrder(sym, String(pos.stopOrderId));
                 const orderData: Record<string, string> = {
                     symbol: sym, side: closeSide, orderType: "MARKET",
-                    qty: qty.toFixed(prec.qty), tradeSide: "CLOSE", effect: "GTC",
+                    qty: qty.toFixed(prec.qty),
                 };
                 if (posId) orderData.positionId = posId;
                 const result = await this.postOrder(orderData);
@@ -567,7 +563,7 @@ export class BitunixExecutor {
     ): Promise<boolean> {
         const data: Record<string, string> = {
             symbol, side: closeSide, orderType: "MARKET",
-            qty: qty.toFixed(prec.qty), tradeSide: "CLOSE", effect: "GTC",
+            qty: qty.toFixed(prec.qty),
         };
         if (this.positionId) data.positionId = this.positionId;
         return !!(await this.postOrder(data));
