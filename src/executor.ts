@@ -164,7 +164,9 @@ export class BitunixExecutor {
         // Step 2: 设置交易环境 (逊仓 + 杠杆 200x)
         await this.setupTradeEnv(targetSymbol);
 
-        const qty = +((margin * LEVERAGE) / currentPrice).toFixed(prec.qty);
+        // 强制 1 位小数 (floor): 1.924 → 1.9 (Bitunix 安全线)
+        const rawQty = (margin * LEVERAGE) / currentPrice;
+        const qty = Math.floor(rawQty * 10) / 10;
         if (qty <= 0) { this._entering = false; return false; }
 
         const tag = genOrderTag();
