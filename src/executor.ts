@@ -6,7 +6,7 @@
  */
 
 import {
-    BITUNIX_BASE, SYMBOL, LEVERAGE,
+    BITUNIX_BASE, SYMBOL, ETH_SYMBOL, LEVERAGE,
     SL_POINTS, TP_POINTS, FEE_SHIELD_POINTS, HARD_TIMEOUT_MS, MIN_HOLD_MS,
     TAKER_FEE, SYMBOL_PRECISION,
     DUMP_EFF_THRESHOLD, DUMP_VOL_MULT,
@@ -234,18 +234,17 @@ export class BitunixExecutor {
             reason = `💰 效率衰竭 [${this.highSlippage ? "🚨Slip" : "15s✅"}+FeeShield✅]: +${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // ═══ 执行平仓 ═══
+        // ═══ 执行平仓 — 关闭所有仓位 ═══
         if (reason) {
             if (this.slOrderId) await this.cancelOrder(this.positionSymbol, this.slOrderId);
-            const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
-            const ok = await this.closePosition(this.positionSymbol, closeSide, this.positionQty, prec);
-            if (ok) {
+            const closedQty = await this.closeAllPositions(this.positionSymbol);
+            if (closedQty > 0) {
                 const gross = pnlPt * this.positionQty;
                 const fee = (this.entryPrice * this.positionQty + currentPrice * this.positionQty) * TAKER_FEE;
                 const net = gross - fee;
                 const emoji = net > 0 ? "✅" : "❌";
                 const holdSec = (elapsed / 1000).toFixed(1);
-                log(`${emoji} [${sym}] ${reason} | 持仓${holdSec}s | 净PnL: ${net >= 0 ? "+" : ""}${net.toFixed(2)}U`);
+                log(`${emoji} [${sym}] ${reason} | 持仓${holdSec}s | 净PnL: ${net >= 0 ? "+" : ""}${net.toFixed(2)}U | 关闭${closedQty}个仓位`);
                 this.logTrade(reason, pnlPt, net);
                 const netPnl = net;
                 this.resetPosition();
@@ -269,9 +268,84 @@ export class BitunixExecutor {
         } catch { return 0; }
     }
 
-    // ═══ 仓位同步 ═══
+    // ═══ 仓位同步 — 聚合所有同方向仓位 ═══
     async syncPositions(): Promise<boolean> {
-        const sym = this.positionSymbol || SYMBOL;
+        // 查询所有可能的交易对
+        const symbols = [this.positionSymbol || SYMBOL, ETH_SYMBOL].filter(
+            (v, i, a) => a.indexOf(v) === i,
+        );
+
+        for (const sym of symbols) {
+            try {
+                const queryStr = "symbol" + sym;
+                const headers = this.sign(queryStr);
+                const res = await fetch(
+                    `${BITUNIX_BASE}/api/v1/futures/position/get_pending_positions?symbol=${sym}`,
+                    { headers: { ...headers, "Content-Type": "application/json", language: "en-US" } },
+                );
+                const data = (await res.json()) as any;
+                if (String(data?.code) !== "0") continue;
+
+                const positions = (data?.data ?? []).filter(
+                    (p: any) => (p.symbol || "").toUpperCase() === sym,
+                );
+
+                if (positions.length > 0 && this.inPosition && sym === this.positionSymbol) {
+                    // 聚合所有同方向仓位的总量
+                    let totalQty = 0;
+                    for (const p of positions) {
+                        const side = String(p.side).toUpperCase();
+                        if (
+                            (this.positionSide === "long" && side === "BUY") ||
+                            (this.positionSide === "short" && side === "SELL")
+                        ) {
+                            totalQty += +(p.qty || p.positionAmt || 0);
+                            if (!this.positionId && p.positionId) {
+                                this.positionId = String(p.positionId);
+                            }
+                        }
+                    }
+                    if (totalQty > this.positionQty) {
+                        log(`⚠️ 仓位聚合: Bot记录=${this.positionQty} | 实际总量=${totalQty} (包含重复开仓)`);
+                        this.positionQty = totalQty;  // 更新为实际总量
+                    }
+                } else if (positions.length === 0 && this.inPosition && sym === this.positionSymbol) {
+                    log("⚠️ 仓位已被关闭 (STOP_MARKET 可能已触发)");
+                    this.resetPosition();
+                }
+            } catch (e) {
+                log(`syncPositions 异常 [${sym}]: ${e}`);
+            }
+        }
+        return true;
+    }
+
+    // ═══ 强制平仓 — 关闭所有仓位 ═══
+    async forceCloseAll(currentPrice: number): Promise<{ ok: boolean; netPnlU: number }> {
+        if (!this.inPosition) return { ok: false, netPnlU: 0 };
+
+        if (this.slOrderId) await this.cancelOrder(this.positionSymbol, this.slOrderId);
+
+        const closedCount = await this.closeAllPositions(this.positionSymbol);
+        if (closedCount === 0) return { ok: false, netPnlU: 0 };
+
+        const pnl =
+            this.positionSide === "long"
+                ? currentPrice - this.entryPrice
+                : this.entryPrice - currentPrice;
+        const fee = (this.entryPrice * this.positionQty + currentPrice * this.positionQty) * TAKER_FEE;
+        const net = pnl * this.positionQty - fee;
+        log(`🔴 强平 [${this.positionSymbol}] ${closedCount}个仓位 | 净PnL: ${net.toFixed(2)}U`);
+        this.logTrade("强制平仓", pnl, net);
+        this.resetPosition();
+        return { ok: true, netPnlU: net };
+    }
+
+    // ═══ 关闭某交易对的所有仓位 ═══
+    private async closeAllPositions(sym: string): Promise<number> {
+        const prec = getPrecision(sym);
+        let closedCount = 0;
+
         try {
             const queryStr = "symbol" + sym;
             const headers = this.sign(queryStr);
@@ -281,52 +355,58 @@ export class BitunixExecutor {
             );
             const data = (await res.json()) as any;
             if (String(data?.code) !== "0") {
-                log(`⚠️ syncPositions: code=${data?.code} msg=${data?.msg}`);
-                return false;
+                log(`⚠️ closeAllPositions: 查询失败 code=${data?.code}`);
+                // fallback: 尝试用记录的数量关闭
+                const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
+                const ok = await this.closePosition(sym, closeSide, this.positionQty, prec);
+                return ok ? 1 : 0;
             }
+
             const positions = (data?.data ?? []).filter(
                 (p: any) => (p.symbol || "").toUpperCase() === sym,
             );
 
-            if (positions.length > 0 && this.inPosition) {
-                const myPos = positions.find((p: any) => {
-                    const side = String(p.side).toUpperCase();
-                    return (
-                        (this.positionSide === "long" && side === "BUY") ||
-                        (this.positionSide === "short" && side === "SELL")
-                    );
-                });
-                if (myPos?.positionId) this.positionId = String(myPos.positionId);
-            } else if (positions.length === 0 && this.inPosition) {
-                log("⚠️ 仓位已被关闭 (STOP_MARKET 可能已触发)");
-                this.resetPosition();
+            if (positions.length === 0) {
+                log(`⚠️ closeAllPositions: 无仓位可关`);
+                return 0;
             }
-            return true;
+
+            log(`🛡️ 发现 ${positions.length} 个仓位, 逐个关闭...`);
+
+            for (const pos of positions) {
+                const posSide = String(pos.side).toUpperCase();
+                const closeSide = posSide === "BUY" ? "SELL" : "BUY";
+                const qty = +(pos.qty || pos.positionAmt || 0);
+                const posId = pos.positionId ? String(pos.positionId) : "";
+
+                if (qty <= 0) continue;
+
+                // 取消该仓位的所有挂单
+                if (pos.stopOrderId) await this.cancelOrder(sym, String(pos.stopOrderId));
+
+                const orderData: Record<string, string> = {
+                    symbol: sym,
+                    side: closeSide,
+                    orderType: "MARKET",
+                    qty: qty.toFixed(prec.qty),
+                    tradeSide: "CLOSE",
+                    effect: "GTC",
+                };
+                if (posId) orderData.positionId = posId;
+
+                const result = await this.postOrder(orderData);
+                if (result) {
+                    closedCount++;
+                    log(`✅ 关闭仓位 #${closedCount}: ${posSide} ${qty} [posId=${posId}]`);
+                } else {
+                    log(`❌ 关闭仓位失败: ${posSide} ${qty} [posId=${posId}]`);
+                }
+            }
         } catch (e) {
-            log(`syncPositions 异常: ${e}`);
-            return false;
+            log(`closeAllPositions 异常: ${e}`);
         }
-    }
 
-    // ═══ 强制平仓 ═══
-    async forceCloseAll(currentPrice: number): Promise<{ ok: boolean; netPnlU: number }> {
-        if (!this.inPosition) return { ok: false, netPnlU: 0 };
-
-        const prec = getPrecision(this.positionSymbol);
-        if (this.slOrderId) await this.cancelOrder(this.positionSymbol, this.slOrderId);
-        const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
-        const ok = await this.closePosition(this.positionSymbol, closeSide, this.positionQty, prec);
-        if (!ok) return { ok: false, netPnlU: 0 };
-        const pnl =
-            this.positionSide === "long"
-                ? currentPrice - this.entryPrice
-                : this.entryPrice - currentPrice;
-        const fee = (this.entryPrice * this.positionQty + currentPrice * this.positionQty) * TAKER_FEE;
-        const net = pnl * this.positionQty - fee;
-        log(`🔴 强平 [${this.positionSymbol}] 净PnL: ${net.toFixed(2)}U`);
-        this.logTrade("强制平仓", pnl, net);
-        this.resetPosition();
-        return { ok: true, netPnlU: net };
+        return closedCount;
     }
 
     // ═══ API ═══
