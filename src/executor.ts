@@ -148,11 +148,26 @@ export class BitunixExecutor {
         this._entering = true;
 
         const prec = getPrecision(targetSymbol);
+        const coinName = targetSymbol.replace("USDT", "");
+
+        // Step 1: 查询可用余额
+        const balance = await this.getBalance();
+        log(`💰 [PRE-ORDER] 可用余额: $${balance.toFixed(2)} | 所需保证金: $${margin}`);
+        if (balance < margin * 1.1) {
+            this._entering = false;
+            log(`❌ 余额不足! $${balance.toFixed(2)} < $${(margin * 1.1).toFixed(2)}`);
+            if (onDepthFail) await onDepthFail(`❌ 余额不足: $${balance.toFixed(2)} < M=$${margin}`);
+            return false;
+        }
+
+        // Step 2: 预设杠杆 200x
+        await this.setLeverage(targetSymbol, LEVERAGE);
+
         const qty = +((margin * LEVERAGE) / currentPrice).toFixed(prec.qty);
         if (qty <= 0) { this._entering = false; return false; }
 
         const tag = genOrderTag();
-        const coinName = targetSymbol.replace("USDT", "");
+        log(`🚀 [ENTRY] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)} | M=$${margin} | Lev=${LEVERAGE}x`);
 
         const orderData: Record<string, string> = {
             symbol: targetSymbol,
@@ -469,11 +484,39 @@ export class BitunixExecutor {
             });
             const json = (await res.json()) as any;
             if (String(json?.code) === "0") return json?.data || json;
-            log(`⚠️ API ${data.orderType}: code=${json?.code} msg=${json?.msg}`);
+
+            // 🚨 完整原始响应日志
+            log(`🚨 [ORDER-FAIL] type=${data.orderType} side=${data.side} qty=${data.qty} symbol=${data.symbol}`);
+            log(`🚨 [ORDER-FAIL] code=${json?.code} msg=${json?.msg}`);
+            log(`🚨 [ORDER-FAIL] RAW: ${JSON.stringify(json).slice(0, 500)}`);
+            log(`🚨 [ORDER-FAIL] REQ: ${body}`);
             return null;
         } catch (e) {
             log(`❌ API 异常: ${e}`);
             return null;
+        }
+    }
+
+    // ═══ 预设杠杆 ═══
+    private async setLeverage(symbol: string, leverage: number): Promise<boolean> {
+        try {
+            const body = JSON.stringify({ marginCoin: "USDT", symbol, leverage: String(leverage) });
+            const headers = this.sign("", body);
+            const res = await fetch(`${BITUNIX_BASE}/api/v1/futures/account/change_leverage`, {
+                method: "POST",
+                headers: { ...headers, "Content-Type": "application/json", language: "en-US" },
+                body,
+            });
+            const json = (await res.json()) as any;
+            if (String(json?.code) === "0") {
+                log(`✅ 杠杆已设置: ${symbol} ${leverage}x`);
+                return true;
+            }
+            log(`⚠️ 设置杠杆失败 [${symbol}]: code=${json?.code} msg=${json?.msg}`);
+            return false;
+        } catch (e) {
+            log(`❌ 设置杠杆异常: ${e}`);
+            return false;
         }
     }
 
