@@ -64,6 +64,12 @@ export interface CausalSnapshot {
     ethTop3Depth: number;        // ETH Ask Top3 深度总量
     recentDeltaDirs: number[];   // 最近 N 笔 Delta 方向 (+1=买, -1=卖)
     ethRecentDeltaDirs: number[];// ETH 最近 N 笔 Delta 方向
+
+    // ── V52.4 延迟诊断 ──
+    wsLatencyMs: number;         // WS 最近一笔 trade 延迟
+    wsLatencyAvg: number;        // WS 平均延迟
+    wsLatencyMax: number;        // WS 最大延迟
+    highLatencyCount: number;    // >200ms 延迟次数
 }
 
 // ═══════════════════════════════════════════════
@@ -231,6 +237,13 @@ export class BitunixWSEngine {
     private btc: SymbolTracker;
     private eth: SymbolTracker;
 
+    // V52.4 延迟诊断
+    private _wsLatency = 0;
+    private _wsLatencySum = 0;
+    private _wsLatencyCount = 0;
+    private _wsLatencyMax = 0;
+    private _highLatencyCount = 0;
+
     constructor() {
         this.sol = new SymbolTracker(SYMBOL);
         this.btc = new SymbolTracker(BTC_SYMBOL);
@@ -361,6 +374,12 @@ export class BitunixWSEngine {
             ethTop3Depth: this.eth.top3Depth,
             recentDeltaDirs: this.sol.getRecentDeltaDirs(),
             ethRecentDeltaDirs: this.eth.getRecentDeltaDirs(),
+
+            // V52.4 延迟诊断
+            wsLatencyMs: this._wsLatency,
+            wsLatencyAvg: this._wsLatencyCount > 0 ? Math.round(this._wsLatencySum / this._wsLatencyCount) : 0,
+            wsLatencyMax: this._wsLatencyMax,
+            highLatencyCount: this._highLatencyCount,
         };
     }
 
@@ -449,6 +468,26 @@ export class BitunixWSEngine {
         if (!tracker) return;
 
         if (ch === "trade" || ch.includes("trade")) {
+            // V52.4 延迟诊断: 计算 WS trade 事件延迟
+            const tradeList = Array.isArray(data) ? data : [data];
+            for (const t of tradeList) {
+                const eventTs = +(t.ts || t.T || t.time || 0);
+                if (eventTs > 0) {
+                    const latency = Date.now() - eventTs;
+                    if (latency >= 0 && latency < 60_000) {  // 合理范围
+                        this._wsLatency = latency;
+                        this._wsLatencySum += latency;
+                        this._wsLatencyCount++;
+                        if (latency > this._wsLatencyMax) this._wsLatencyMax = latency;
+                        if (latency > 200) {
+                            this._highLatencyCount++;
+                            if (this._highLatencyCount <= 5 || this._highLatencyCount % 50 === 0) {
+                                log(`⚠️ High WS Latency: ${latency}ms [${symbol}] (count=${this._highLatencyCount})`);
+                            }
+                        }
+                    }
+                }
+            }
             tracker.handleTrade(data);
         } else if (ch === "depth5" || ch.includes("depth")) {
             tracker.handleDepth(data);

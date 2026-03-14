@@ -44,6 +44,12 @@ export class BitunixExecutor {
 
     tradeLog: any[] = [];
 
+    // V52.4 延迟诊断 — 公开属性供状态面板读取
+    lastEntryMs = 0;          // 最近入场订单往返时间
+    lastSlMs = 0;             // 最近 SL 订单往返时间
+    lastSlippage = 0;         // 最近滑点 (pt)
+    signalPrice = 0;          // 信号价格 (entry signal)
+
     constructor(apiKey: string, secretKey: string) {
         this.apiKey = apiKey;
         this.secretKey = secretKey;
@@ -104,7 +110,14 @@ export class BitunixExecutor {
         const actualPrice = filledPrice > 0 ? filledPrice : currentPrice;
         const actualQty = filledQty > 0 ? filledQty : qty;
 
+        // V52.4 延迟诊断: 订单往返时间 + 滑点
+        this.lastEntryMs = Math.round(ms);
+        const slippage = Math.abs(actualPrice - currentPrice);
+        this.lastSlippage = slippage;
+        this.signalPrice = currentPrice;
+
         log(`✅ MARKET ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} [${targetSymbol}] (${ms.toFixed(0)}ms)`);
+        log(`[DRIFT] SignalPrice: ${currentPrice.toFixed(prec.price)} | FillPrice: ${actualPrice.toFixed(prec.price)} | Slippage: ${slippage.toFixed(prec.price)}pt`);
 
         this.inPosition = true;
         this.positionSide = side;
@@ -120,10 +133,13 @@ export class BitunixExecutor {
             : actualPrice + SL_POINTS;
         this.currentSlPrice = slPrice;
 
+        const slT0 = performance.now();
         const slOk = await this.placeStopMarket(
             targetSymbol, side === "long" ? "SELL" : "BUY", actualQty, slPrice, prec,
         );
-        if (slOk) log(`🛡️ Atomic SL: ${slPrice.toFixed(prec.price)} (-${SL_POINTS}pt)`);
+        this.lastSlMs = Math.round(performance.now() - slT0);
+
+        if (slOk) log(`🛡️ Atomic SL: ${slPrice.toFixed(prec.price)} (-${SL_POINTS}pt) [${this.lastSlMs}ms]`);
         else log("⚠️ Atomic SL 挂单失败! 软件层保护");
 
         return true;

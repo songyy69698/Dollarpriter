@@ -149,6 +149,14 @@ class CausalArbitrageBot {
             const ok = await this.executor.atomicEntry(sig.side, sig.price, sig.margin, sig.targetSymbol, notifyTG);
             if (ok) {
                 log(`✅ ${modeLabel} ${sig.side.toUpperCase()} ${coinName} @ ${sig.price.toFixed(prec.price)} M=$${sig.margin}`);
+
+                // V52.4 延迟诊断 TG 通知
+                await notifyTG(
+                    `📡 *订单诊断*\n` +
+                    `⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n` +
+                    `[DRIFT] Signal: ${this.executor.signalPrice.toFixed(prec.price)} | Fill: ${this.executor.entryPrice.toFixed(prec.price)} | Slip: ${this.executor.lastSlippage.toFixed(prec.price)}pt`,
+                );
+
                 await Bun.sleep(500);
                 await this.executor.syncPositions();
             }
@@ -298,6 +306,12 @@ class CausalArbitrageBot {
         m += `──────────────\n`;
         m += `📋 今日: ${this.dailyTrades}/${MAX_DAILY_TRADES}单 | ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(2)}U\n`;
         m += `📋 累计: ${this.totalTrades}单 | ${this.totalPnl >= 0 ? "+" : ""}${this.totalPnl.toFixed(2)}U\n`;
+        m += `──────────────\n`;
+        m += `📡 WS延迟: ${s.wsLatencyMs}ms (avg=${s.wsLatencyAvg}ms max=${s.wsLatencyMax}ms)\n`;
+        if (s.highLatencyCount > 0) m += `⚠️ 高延迟(>200ms): ${s.highLatencyCount}次\n`;
+        if (this.executor.lastEntryMs > 0) {
+            m += `⏱ 上次Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms | Slip: ${this.executor.lastSlippage.toFixed(2)}pt\n`;
+        }
 
         if (this.executor.inPosition) {
             const prec = SYMBOL_PRECISION[this.executor.positionSymbol] || { qty: 1, price: 3 };
@@ -330,6 +344,7 @@ class CausalArbitrageBot {
         m += `ETH $${s.ethPrice.toFixed(2)} eff=${s.ethEfficiency.toFixed(3)} sp=${s.ethSpread.toFixed(2)}\n`;
         m += `BTC $${s.btcPrice.toFixed(1)} | 余$${b.toFixed(2)}\n`;
         m += `今${this.dailyTrades}单 ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U | 累${this.totalTrades}单 ${this.totalPnl >= 0 ? "+" : ""}${this.totalPnl.toFixed(1)}U`;
+        m += `\n📡 WS: ${s.wsLatencyAvg}ms(avg) ${s.wsLatencyMax}ms(max) ${s.highLatencyCount}❗`;
 
         if (this.executor.inPosition) {
             const curPrice = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
