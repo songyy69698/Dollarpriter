@@ -1,8 +1,8 @@
 /**
- * 🧠 Dollarprinter V52.2 — Fee Shield Recovery
+ * 🧠 Dollarprinter V52.4 — Logic Leader
  * ═══════════════════════════════════════
- * 三模式: A 独立狙击 / B 联动共振 / C BTC领路自动切换
- * MARKET IOC入场 + Fee Shield 8pt + Spread Gate + 20min超时
+ * 双条件入场: A(BTC4.0x+ETH1.0) B(BTC2.5x+ETH2.0)
+ * MARKET IOC + Fee Shield 5pt + 15s持仓保护 + 20min超时
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -11,12 +11,13 @@ import { BitunixExecutor } from "./executor";
 import { notifyTG, pollTGCommands } from "./telegram";
 import {
     LEVERAGE, MARGIN_DEFAULT, IMBALANCE_RATIO,
-    SL_POINTS, TP_POINTS, FEE_SHIELD_POINTS,
+    SL_POINTS, TP_POINTS, FEE_SHIELD_POINTS, MIN_HOLD_MS,
     HARD_TIMEOUT_MS, MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
     CVD_CONFIRM_TICKS,
     MAX_DAILY_TRADES, MAX_DAILY_LOSS,
     BTC_IMBALANCE_RATIO, SOL_RESONANCE_RATIO,
-    BTC_AUTO_SWITCH_RATIO,
+    BTC_LEAD_STRONG, ETH_EFF_WITH_STRONG_BTC,
+    BTC_LEAD_WEAK, ETH_EFF_WITH_WEAK_BTC,
     EFFICIENCY_ABS_THRESHOLD,
     SOL_MIN_EFFICIENCY, ETH_MIN_EFFICIENCY,
     SYMBOL, BTC_SYMBOL, ETH_SYMBOL,
@@ -58,8 +59,8 @@ class CausalArbitrageBot {
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🎯 Dollarprinter V52.2 — Fee Shield Recovery");
-        log("  🔥 三模式: 独立狙击 / 联动共振 / BTC自动切换");
+        log("  🎯 Dollarprinter V52.4 — Logic Leader");
+        log("  🔥 双条件入场 + 联动共振 + 独立狙击");
         log("  📡 三币种: SOL + BTC + ETH");
         log("════════════════════════════════════════════");
 
@@ -78,19 +79,20 @@ class CausalArbitrageBot {
         log(`  📊 ${SYMBOL} | ${LEVERAGE}x 杠杆 | M=$${MARGIN_DEFAULT}`);
         log(`  🎯 A: SOL ${IMBALANCE_RATIO}x 独立 | 效率>${EFFICIENCY_ABS_THRESHOLD}`);
         log(`  🔥 B: BTC ${BTC_IMBALANCE_RATIO}x + SOL ${SOL_RESONANCE_RATIO}x 联动`);
-        log(`  🚀 C: BTC ${BTC_AUTO_SWITCH_RATIO}x → SOL>${SOL_MIN_EFFICIENCY} / ETH>${ETH_MIN_EFFICIENCY}`);
+        log(`  🚀 C①: BTC≥${BTC_LEAD_STRONG}x + ETH效率≥${ETH_EFF_WITH_STRONG_BTC}`);
+        log(`  🚀 C②: BTC≥${BTC_LEAD_WEAK}x + ETH效率≥${ETH_EFF_WITH_WEAK_BTC}`);
         log(`  🛡️ SL=${SL_POINTS}pt | TP=${TP_POINTS}pt | FeeShield≥${FEE_SHIELD_POINTS}pt`);
-        log(`  ⏰ 超时=${HARD_TIMEOUT_MS / 60_000}min | Spread≤${MAX_SPREAD_POINTS}pt | Depth≥${MIN_DEPTH_ETH}ETH`);
+        log(`  ⏱️ Hold≥${MIN_HOLD_MS / 1000}s | 超时=${HARD_TIMEOUT_MS / 60_000}min | Spread≤${MAX_SPREAD_POINTS}pt`);
         log(`  📋 CVD=${CVD_CONFIRM_TICKS}tick | MARKET IOC入场`);
         log(`  ⏰ 日限${MAX_DAILY_TRADES}单`);
         log("════════════════════════════════════════════");
 
         await notifyTG(
-            `🎯 *Dollarprinter V52.2 — Fee Shield Recovery*\n` +
-            `余额: $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `🛡️ FeeShield≥${FEE_SHIELD_POINTS}pt | SL=${SL_POINTS}pt | TP=${TP_POINTS}pt\n` +
-            `⏰ 超时${HARD_TIMEOUT_MS / 60_000}min | Spread≤${MAX_SPREAD_POINTS}pt\n` +
-            `BTC ${BTC_AUTO_SWITCH_RATIO}x→SOL/ETH | CVD ${CVD_CONFIRM_TICKS}tick | MARKET IOC\n` +
+            `🎯 *Dollarprinter V52.4 — Logic Leader*\n` +
+            `余额: $${bal.toFixed(2)} | ${LEVERAGE}x | M=$${MARGIN_DEFAULT}\n` +
+            `🛡️ Fee≥5pt | SL=8pt | TP=25pt | Hold≥15s\n` +
+            `🚀 C①: BTC≥${BTC_LEAD_STRONG}x+ETH≥1.0 | C②: BTC≥${BTC_LEAD_WEAK}x+ETH≥2.0\n` +
+            `⏰ 超时${HARD_TIMEOUT_MS / 60_000}min | CVD ${CVD_CONFIRM_TICKS}tick\n` +
             `⚠️ 暂停中, 发 1 激活`,
         );
 
@@ -98,7 +100,7 @@ class CausalArbitrageBot {
         this.positionLoop();
         this.tgCommandLoop();
         setInterval(() => this.hourlyReport(), 3600_000);
-        log("🟢 V52.2 就绪 — 等待 CEO 激活 (Telegram 发 1)");
+        log("🟢 V52.4 就绪 — 等待 CEO 激活 (Telegram 发 1)");
     }
 
     private async waitForData() {
@@ -210,11 +212,11 @@ class CausalArbitrageBot {
             lastId = await pollTGCommands(lastId, {
                 "1": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V52.2 Fee Shield 激活*\n三模式扫描中...`);
+                    await notifyTG(`✅ *V52.4 Logic Leader 激活*\n双条件+联动+狙击 扫描中...`);
                 },
                 "/start": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V52.2 Fee Shield 激活*\n三模式扫描中...`);
+                    await notifyTG(`✅ *V52.4 Logic Leader 激活*\n双条件+联动+狙击 扫描中...`);
                 },
                 "0": async () => {
                     this.paused = true;
@@ -222,7 +224,7 @@ class CausalArbitrageBot {
                 },
                 "/stop": async () => {
                     this.paused = true;
-                    await notifyTG("🔴 *V52.2 暂停*");
+                    await notifyTG("🔴 *V52.4 暂停*");
                 },
                 s: async () => { await this.sendStatus(); },
                 "/status": async () => { await this.sendStatus(); },
@@ -261,7 +263,7 @@ class CausalArbitrageBot {
                 },
                 "/help": async () => {
                     await notifyTG(
-                        `📖 *V52.2 Fee Shield*\n1 启动\n0 暂停\ns 状态\nx 强平\nh 帮助`,
+                        `📖 *V52.4 Logic Leader*\n1 启动\n0 暂停\ns 状态\nx 强平\nh 帮助`,
                     );
                 },
             });
@@ -279,14 +281,15 @@ class CausalArbitrageBot {
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
 
-        let m = `📊 *V52.2 Fee Shield Recovery*\n`;
+        let m = `📊 *V52.4 Logic Leader*\n`;
         m += `──────────────\n`;
         m += `💰 余额: $${b.toFixed(2)}\n`;
         m += `🔌 WS: ${s.connected ? "🟢" : "🔴"} | ${this.paused ? "🔴暂停" : "🟢运行"}\n`;
         m += `⚙️ 运行: ${uptimeH}h${uptimeM}m | 扫描: ${this.strategy.getScanCount()}\n`;
         m += `──────────────\n`;
-        m += `🛡️ FeeShield≥${FEE_SHIELD_POINTS}pt | SL=${SL_POINTS}pt | TP=${TP_POINTS}pt\n`;
-        m += `⏰ 超时=${HARD_TIMEOUT_MS / 60_000}min | Spread≤${MAX_SPREAD_POINTS}pt\n`;
+        m += `🛡️ Fee≥${FEE_SHIELD_POINTS}pt | SL=${SL_POINTS}pt | TP=${TP_POINTS}pt\n`;
+        m += `⏱️ Hold≥${MIN_HOLD_MS / 1000}s | 超时=${HARD_TIMEOUT_MS / 60_000}min\n`;
+        m += `🚀 C①: BTC≥${BTC_LEAD_STRONG}x+ETH≥1.0 | C②: BTC≥${BTC_LEAD_WEAK}x+ETH≥2.0\n`;
         m += `──────────────\n`;
         m += `📈 SOL $${s.price.toFixed(3)} | 效率${s.efficiency.toFixed(4)}\n`;
         m += `   买:${s.buyDelta.toFixed(1)} 卖:${s.sellDelta.toFixed(1)} | 墙A:${s.askWallVol.toFixed(1)} B:${s.bidWallVol.toFixed(1)}\n`;
@@ -321,7 +324,7 @@ class CausalArbitrageBot {
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
 
-        let m = `💓 *V52.2 Fee Shield*\n`;
+        let m = `💓 *V52.4 Logic Leader*\n`;
         m += `${uptimeH}h${uptimeM}m | ${this.paused ? "🔴" : "🟢"}\n`;
         m += `SOL $${s.price.toFixed(3)} eff=${s.efficiency.toFixed(3)}\n`;
         m += `ETH $${s.ethPrice.toFixed(2)} eff=${s.ethEfficiency.toFixed(3)} sp=${s.ethSpread.toFixed(2)}\n`;

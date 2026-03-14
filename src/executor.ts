@@ -1,13 +1,13 @@
 /**
- * ⚡ Bitunix 执行器 — V52.2 "Fee Shield Recovery"
+ * ⚡ Bitunix 执行器 — V52.4 "Logic Leader"
  * ═══════════════════════════════════════════
- * MARKET 入场 (IOC) + Fee Shield 8pt 出场门槛
+ * MARKET 入场 (IOC) + Fee Shield 5pt + 15s持仓保护
  * 硬止损 8pt / 硬止盈 25pt / 20分钟超时
  */
 
 import {
     BITUNIX_BASE, SYMBOL, LEVERAGE,
-    SL_POINTS, TP_POINTS, FEE_SHIELD_POINTS, HARD_TIMEOUT_MS,
+    SL_POINTS, TP_POINTS, FEE_SHIELD_POINTS, HARD_TIMEOUT_MS, MIN_HOLD_MS,
     TAKER_FEE, SYMBOL_PRECISION,
     DUMP_EFF_THRESHOLD, DUMP_VOL_MULT,
 } from "./config";
@@ -172,6 +172,7 @@ export class BitunixExecutor {
             : this.entryPrice - currentPrice;
 
         const elapsed = Date.now() - this.entryTs;
+        const holdSafe = elapsed >= MIN_HOLD_MS;  // V52.4: 15秒保护期
         let reason = "";
 
         // ═══ Layer 1: 硬止损 — 永远有效，8pt ═══
@@ -189,16 +190,16 @@ export class BitunixExecutor {
             reason = `⏰ 超时平仓: ${(elapsed / 60_000).toFixed(1)}min (limit=20min) ${pnlPt >= 0 ? "+" : ""}${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // ═══ 以下出场受 Fee Shield 保护: pnlPt >= 8pt 才触发 ═══
+        // ═══ 以下出场受 双重保护: holdSafe(15s) + FeeShield(5pt) ═══
 
-        // Layer 4: 放量倒货止盈 — Fee Shield 保护
-        if (!reason && efficiency < DUMP_EFF_THRESHOLD && recentVol > avgVol * DUMP_VOL_MULT && pnlPt >= FEE_SHIELD_POINTS) {
-            reason = `💰 放量倒货 [FeeShield✅]: eff=${efficiency.toFixed(4)}<${DUMP_EFF_THRESHOLD} +${pnlPt.toFixed(prec.price)}pt`;
+        // Layer 4: 放量倒货止盈 — 15s + Fee Shield 5pt
+        if (!reason && holdSafe && efficiency < DUMP_EFF_THRESHOLD && recentVol > avgVol * DUMP_VOL_MULT && pnlPt >= FEE_SHIELD_POINTS) {
+            reason = `💰 放量倒货 [15s✅+FeeShield✅]: eff=${efficiency.toFixed(4)}<${DUMP_EFF_THRESHOLD} +${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // Layer 5: 效率衰竭止盈 — Fee Shield 保护
-        if (!reason && efficiencyDecay && pnlPt >= FEE_SHIELD_POINTS) {
-            reason = `💰 效率衰竭 [FeeShield✅]: +${pnlPt.toFixed(prec.price)}pt`;
+        // Layer 5: 效率衰竭止盈 — 15s + Fee Shield 5pt
+        if (!reason && holdSafe && efficiencyDecay && pnlPt >= FEE_SHIELD_POINTS) {
+            reason = `💰 效率衰竭 [15s✅+FeeShield✅]: +${pnlPt.toFixed(prec.price)}pt`;
         }
 
         // ═══ 执行平仓 ═══
