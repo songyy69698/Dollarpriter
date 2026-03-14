@@ -170,27 +170,44 @@ export class BitunixExecutor {
         const tag = genOrderTag();
         log(`🚀 [ENTRY] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)} | M=$${margin} | Lev=${LEVERAGE}x`);
 
-        const orderData: Record<string, string> = {
+        // ═══ 智能下单: 先试单向, 失败自动切双向 ═══
+        const orderBase: Record<string, string> = {
             symbol: targetSymbol,
             side: side === "long" ? "BUY" : "SELL",
             orderType: "MARKET",
             qty: qty.toString(),
+            marginCoin: "USDT",
             clientId: tag,
         };
 
         const t0 = performance.now();
-        const result = await this.postOrder(orderData);
-        const ms = performance.now() - t0;
+
+        // 尝试 1: 单向模式 (无 tradeSide)
+        let result = await this.postOrder({ ...orderBase });
+        let ms = performance.now() - t0;
+
+        // 尝试 2: 如果失败, 加上 tradeSide + effect (双向/Hedge 模式)
+        if (!result && this.lastError?.includes("Parameter")) {
+            log("🔄 单向模式失败, 尝试 Hedge 模式 (tradeSide=OPEN)...");
+            result = await this.postOrder({
+                ...orderBase,
+                tradeSide: "OPEN",
+                effect: "IOC",
+            });
+            ms = performance.now() - t0;
+        }
 
         if (!result) {
             this._entering = false;
             const errDetail = this.lastError || "未知错误";
+            const reqBody = JSON.stringify(orderBase);
             log(`❌ MARKET 开仓失败 [${targetSymbol}]: ${errDetail}`);
             if (onDepthFail) await onDepthFail(
                 `❌ MARKET 开仓失败 [${coinName}]\n` +
                 `💰 余额: $${balance.toFixed(2)} | M=$${margin}\n` +
                 `🚀 ${side.toUpperCase()} ${qty} @ $${currentPrice.toFixed(prec.price)}\n` +
-                `🚨 错误: ${errDetail}`
+                `🚨 错误: ${errDetail}\n` +
+                `📦 REQ: ${reqBody}`
             );
             return false;
         }
