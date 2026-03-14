@@ -54,6 +54,7 @@ export class BitunixExecutor {
     lastSlippage = 0;
     signalPrice = 0;
     highSlippage = false;
+    lastError = "";               // 最近一次 API 错误
 
     constructor(apiKey: string, secretKey: string) {
         this.apiKey = apiKey;
@@ -185,8 +186,14 @@ export class BitunixExecutor {
 
         if (!result) {
             this._entering = false;
-            log(`❌ MARKET 开仓失败 [${targetSymbol}]`);
-            if (onDepthFail) await onDepthFail(`❌ MARKET 开仓失败 [${coinName}]`);
+            const errDetail = this.lastError || "未知错误";
+            log(`❌ MARKET 开仓失败 [${targetSymbol}]: ${errDetail}`);
+            if (onDepthFail) await onDepthFail(
+                `❌ MARKET 开仓失败 [${coinName}]\n` +
+                `💰 余额: $${balance.toFixed(2)} | M=$${margin}\n` +
+                `🚀 ${side.toUpperCase()} ${qty} @ $${currentPrice.toFixed(prec.price)}\n` +
+                `🚨 错误: ${errDetail}`
+            );
             return false;
         }
 
@@ -486,8 +493,10 @@ export class BitunixExecutor {
             if (String(json?.code) === "0") return json?.data || json;
 
             // 🚨 完整原始响应日志
+            const errMsg = `code=${json?.code} msg=${json?.msg}`;
+            this.lastError = errMsg;
             log(`🚨 [ORDER-FAIL] type=${data.orderType} side=${data.side} qty=${data.qty} symbol=${data.symbol}`);
-            log(`🚨 [ORDER-FAIL] code=${json?.code} msg=${json?.msg}`);
+            log(`🚨 [ORDER-FAIL] ${errMsg}`);
             log(`🚨 [ORDER-FAIL] RAW: ${JSON.stringify(json).slice(0, 500)}`);
             log(`🚨 [ORDER-FAIL] REQ: ${body}`);
             return null;
