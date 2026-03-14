@@ -470,8 +470,20 @@ export class BitunixWSEngine {
         if (ch === "trade" || ch.includes("trade")) {
             // V52.4 延迟诊断: 计算 WS trade 事件延迟
             const tradeList = Array.isArray(data) ? data : [data];
+
+            // 首次 trade: 打印所有字段帮助调试时间戳字段名
+            if (this._wsLatencyCount === 0 && tradeList.length > 0) {
+                const sample = tradeList[0];
+                log(`🔬 [LATENCY-DEBUG] Trade 字段: ${JSON.stringify(Object.keys(sample))} | 样本: ${JSON.stringify(sample).slice(0, 300)}`);
+            }
+
             for (const t of tradeList) {
-                const eventTs = +(t.ts || t.T || t.time || 0);
+                // 尝试所有可能的时间戳字段名
+                let eventTs = +(t.ts || t.T || t.t || t.time || t.E || t.timestamp || t.tradeTime || 0);
+
+                // 如果是秒级时间戳 (10位数), 转为毫秒
+                if (eventTs > 0 && eventTs < 1e12) eventTs *= 1000;
+
                 if (eventTs > 0) {
                     const latency = Date.now() - eventTs;
                     if (latency >= 0 && latency < 60_000) {  // 合理范围
@@ -484,6 +496,10 @@ export class BitunixWSEngine {
                             if (this._highLatencyCount <= 5 || this._highLatencyCount % 50 === 0) {
                                 log(`⚠️ High WS Latency: ${latency}ms [${symbol}] (count=${this._highLatencyCount})`);
                             }
+                        }
+                        // 首次成功提取延迟时打印
+                        if (this._wsLatencyCount === 1) {
+                            log(`✅ [LATENCY] 首次检测: ${latency}ms (eventTs=${eventTs})`);
                         }
                     }
                 }
