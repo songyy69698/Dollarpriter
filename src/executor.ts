@@ -1,15 +1,14 @@
 /**
- * ⚡ Bitunix 执行器 — SOL 狙击手 v2.0
+ * ⚡ Bitunix 执行器 — V52.2 "Fee Shield Recovery"
  * ═══════════════════════════════════════════
- * 支持动态交易对切换 (SOL/ETH)
- * 6 层出场防御: 惯性/止损/保本/倒货/衰竭/保本回落
+ * MARKET 入场 (IOC) + Fee Shield 8pt 出场门槛
+ * 硬止损 8pt / 硬止盈 25pt / 20分钟超时
  */
 
 import {
     BITUNIX_BASE, SYMBOL, LEVERAGE,
-    STOP_LOSS_PCT, BE_TARGET_PCT,
-    TAKER_FEE, SYMBOL_PRECISION, MIN_PROFIT_FOR_DECAY,
-    MOMENTUM_CHECK_MS, MOMENTUM_MIN_PCT,
+    SL_POINTS, TP_POINTS, FEE_SHIELD_POINTS, HARD_TIMEOUT_MS,
+    TAKER_FEE, SYMBOL_PRECISION,
     DUMP_EFF_THRESHOLD, DUMP_VOL_MULT,
 } from "./config";
 
@@ -42,7 +41,6 @@ export class BitunixExecutor {
 
     private slOrderId = "";
     private currentSlPrice = 0;
-    private beTriggered = false;
 
     tradeLog: any[] = [];
 
@@ -61,7 +59,7 @@ export class BitunixExecutor {
         return { "api-key": this.apiKey, sign: signature, nonce, timestamp };
     }
 
-    // ═══ 原子入场 — IOC 防滑价 + 动态交易对 ═══
+    // ═══ V52.2: MARKET 入场 (IOC) — 确保执行力 ═══
     async atomicEntry(
         side: "long" | "short",
         currentPrice: number,
@@ -77,13 +75,15 @@ export class BitunixExecutor {
 
         const tag = genOrderTag();
         const coinName = targetSymbol.replace("USDT", "");
+
+        // V52.2: MARKET 入场 + IOC — CEO 要求确保入场执行力
         const orderData: Record<string, string> = {
             symbol: targetSymbol,
             side: side === "long" ? "BUY" : "SELL",
             orderType: "MARKET",
             qty: qty.toString(),
             tradeSide: "OPEN",
-            effect: "IOC",          // 【关键】立即成交否则取消, 防深度不足滑价
+            effect: "IOC",            // V52.2: IOC 即时成交或撤单
             clientId: tag,
         };
 
@@ -92,28 +92,19 @@ export class BitunixExecutor {
         const ms = performance.now() - t0;
 
         if (!result) {
-            log(`❌ IOC 开仓失败 [${targetSymbol}]`);
-            return false;
-        }
-
-        // 【关键】检查成交状态 — IOC 可能因深度不足被取消
-        const status = String(result?.status || result?.orderStatus || "").toUpperCase();
-        const filledQty = +(result?.filledQty || result?.filled_qty || result?.executedQty || qty);
-        const filledPrice = +(result?.filledPrice || result?.filled_price || result?.avgPrice || result?.price || currentPrice);
-
-        if (status === "CANCELLED" || status === "CANCELED" || status === "EXPIRED" || filledQty <= 0) {
-            log(`⚠️ IOC 未成交 [${targetSymbol}]: status=${status} — 深度不足, 放弃进场`);
+            log(`❌ MARKET 开仓失败 [${targetSymbol}]`);
             if (onDepthFail) {
-                await onDepthFail(`⚠️ 深度不足：IOC 撤单成功 [${coinName}]，避开巨大滑价，等待下次因果爆发`);
+                await onDepthFail(`❌ MARKET 开仓失败 [${coinName}]`);
             }
             return false;
         }
 
-        // 成交确认 — 使用实际成交价格 (非预估价)
+        const filledQty = +(result?.filledQty || result?.filled_qty || result?.executedQty || qty);
+        const filledPrice = +(result?.filledPrice || result?.filled_price || result?.avgPrice || result?.price || currentPrice);
         const actualPrice = filledPrice > 0 ? filledPrice : currentPrice;
         const actualQty = filledQty > 0 ? filledQty : qty;
 
-        log(`✅ IOC ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} [${targetSymbol}] (${ms.toFixed(0)}ms)`);
+        log(`✅ MARKET ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} [${targetSymbol}] (${ms.toFixed(0)}ms)`);
 
         this.inPosition = true;
         this.positionSide = side;
@@ -122,18 +113,17 @@ export class BitunixExecutor {
         this.positionQty = actualQty;
         this.entryTs = Date.now();
         this.orderTag = tag;
-        this.beTriggered = false;
 
-        // Atomic SL
+        // Atomic SL — 固定 8 点止损 (STOP_MARKET, GTC)
         const slPrice = side === "long"
-            ? currentPrice * (1 - STOP_LOSS_PCT)
-            : currentPrice * (1 + STOP_LOSS_PCT);
+            ? actualPrice - SL_POINTS
+            : actualPrice + SL_POINTS;
         this.currentSlPrice = slPrice;
 
         const slOk = await this.placeStopMarket(
-            targetSymbol, side === "long" ? "SELL" : "BUY", qty, slPrice, prec,
+            targetSymbol, side === "long" ? "SELL" : "BUY", actualQty, slPrice, prec,
         );
-        if (slOk) log(`🛡️ Atomic SL: ${slPrice.toFixed(prec.price)} (${(STOP_LOSS_PCT * 100).toFixed(2)}%)`);
+        if (slOk) log(`🛡️ Atomic SL: ${slPrice.toFixed(prec.price)} (-${SL_POINTS}pt)`);
         else log("⚠️ Atomic SL 挂单失败! 软件层保护");
 
         return true;
@@ -164,7 +154,7 @@ export class BitunixExecutor {
         return false;
     }
 
-    // ═══ 6 层出场防御 ═══
+    // ═══ V52.2 出场逻辑: Fee Shield + 硬 SL/TP + 20min 超时 ═══
     async checkPosition(
         currentPrice: number,
         efficiencyDecay: boolean,
@@ -175,11 +165,7 @@ export class BitunixExecutor {
         if (!this.inPosition) return { closed: false, reason: "", netPnlU: 0, symbol: "" };
 
         const prec = getPrecision(this.positionSymbol);
-        const sym = this.positionSymbol;  // 先缓存, resetPosition 后仍可用
-
-        const pnlPct = this.positionSide === "long"
-            ? (currentPrice - this.entryPrice) / this.entryPrice
-            : (this.entryPrice - currentPrice) / this.entryPrice;
+        const sym = this.positionSymbol;
 
         const pnlPt = this.positionSide === "long"
             ? currentPrice - this.entryPrice
@@ -188,44 +174,34 @@ export class BitunixExecutor {
         const elapsed = Date.now() - this.entryTs;
         let reason = "";
 
-        // A. 1 秒惯性校验
-        if (elapsed > MOMENTUM_CHECK_MS && pnlPct < MOMENTUM_MIN_PCT && !this.beTriggered) {
-            reason = `⚡ 惯性消失: ${elapsed}ms ${(pnlPct * 100).toFixed(4)}% < ${(MOMENTUM_MIN_PCT * 100).toFixed(2)}%`;
+        // ═══ Layer 1: 硬止损 — 永远有效，8pt ═══
+        if (pnlPt <= -SL_POINTS) {
+            reason = `📉 硬止损: ${pnlPt.toFixed(prec.price)}pt (SL=${SL_POINTS}pt)`;
         }
 
-        // B. 物理止损
-        if (!reason && pnlPct <= -STOP_LOSS_PCT) {
-            reason = `📉 物理止损: ${(pnlPct * 100).toFixed(3)}%`;
+        // ═══ Layer 2: 硬止盈 — 25pt 100% 平仓 ═══
+        if (!reason && pnlPt >= TP_POINTS) {
+            reason = `💰 硬止盈: +${pnlPt.toFixed(prec.price)}pt (TP=${TP_POINTS}pt)`;
         }
 
-        // C. 保本锁定
-        if (!reason && !this.beTriggered && pnlPct >= BE_TARGET_PCT) {
-            this.beTriggered = true;
-            log(`🛡️ 保本触发: +${(pnlPct * 100).toFixed(3)}% → SL移至进场价`);
-
-            if (this.slOrderId) await this.cancelOrder(this.positionSymbol, this.slOrderId);
-            const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
-            const slOk = await this.placeStopMarket(this.positionSymbol, closeSide, this.positionQty, this.entryPrice, prec);
-            this.currentSlPrice = this.entryPrice;
-            if (slOk) log(`🛡️ SL → ${this.entryPrice.toFixed(prec.price)} (零风险)`);
+        // ═══ Layer 3: 20 分钟硬超时 — 无条件平仓 ═══
+        if (!reason && elapsed >= HARD_TIMEOUT_MS) {
+            reason = `⏰ 超时平仓: ${(elapsed / 60_000).toFixed(1)}min (limit=20min) ${pnlPt >= 0 ? "+" : ""}${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // D. 放量倒货止盈 (至少赚 0.3% 才触发)
-        if (!reason && efficiency < DUMP_EFF_THRESHOLD && recentVol > avgVol * DUMP_VOL_MULT && pnlPct > MIN_PROFIT_FOR_DECAY) {
-            reason = `💰 放量倒货: eff=${efficiency.toFixed(4)}<${DUMP_EFF_THRESHOLD} vol=${recentVol.toFixed(1)}>${avgVol.toFixed(1)}×${DUMP_VOL_MULT} +${(pnlPct * 100).toFixed(3)}%`;
+        // ═══ 以下出场受 Fee Shield 保护: pnlPt >= 8pt 才触发 ═══
+
+        // Layer 4: 放量倒货止盈 — Fee Shield 保护
+        if (!reason && efficiency < DUMP_EFF_THRESHOLD && recentVol > avgVol * DUMP_VOL_MULT && pnlPt >= FEE_SHIELD_POINTS) {
+            reason = `💰 放量倒货 [FeeShield✅]: eff=${efficiency.toFixed(4)}<${DUMP_EFF_THRESHOLD} +${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // E. 效率衰竭止盈 (至少赚 0.3% 才触发)
-        if (!reason && efficiencyDecay && pnlPct > MIN_PROFIT_FOR_DECAY) {
-            reason = `💰 效率衰竭: +${(pnlPct * 100).toFixed(3)}% (+${pnlPt.toFixed(prec.price)}pt)`;
+        // Layer 5: 效率衰竭止盈 — Fee Shield 保护
+        if (!reason && efficiencyDecay && pnlPt >= FEE_SHIELD_POINTS) {
+            reason = `💰 效率衰竭 [FeeShield✅]: +${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // F. 保本后回落
-        if (!reason && this.beTriggered && pnlPct <= 0) {
-            reason = `🛡️ 保本平仓: ${(pnlPct * 100).toFixed(3)}%`;
-        }
-
-        // ═══ 执行平仓 (最高优先级: 先平仓, 后通知) ═══
+        // ═══ 执行平仓 ═══
         if (reason) {
             if (this.slOrderId) await this.cancelOrder(this.positionSymbol, this.slOrderId);
             const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
@@ -235,7 +211,8 @@ export class BitunixExecutor {
                 const fee = (this.entryPrice * this.positionQty + currentPrice * this.positionQty) * TAKER_FEE;
                 const net = gross - fee;
                 const emoji = net > 0 ? "✅" : "❌";
-                log(`${emoji} [${sym}] ${reason} | 净PnL: ${net >= 0 ? "+" : ""}${net.toFixed(2)}U`);
+                const holdSec = (elapsed / 1000).toFixed(1);
+                log(`${emoji} [${sym}] ${reason} | 持仓${holdSec}s | 净PnL: ${net >= 0 ? "+" : ""}${net.toFixed(2)}U`);
                 this.logTrade(reason, pnlPt, net);
                 const netPnl = net;
                 this.resetPosition();
@@ -259,7 +236,7 @@ export class BitunixExecutor {
         } catch { return 0; }
     }
 
-    // ═══ 仓位同步 — 使用当前持仓交易对 ═══
+    // ═══ 仓位同步 ═══
     async syncPositions(): Promise<boolean> {
         const sym = this.positionSymbol || SYMBOL;
         try {
@@ -385,7 +362,6 @@ export class BitunixExecutor {
         this.orderTag = "";
         this.slOrderId = "";
         this.currentSlPrice = 0;
-        this.beTriggered = false;
     }
 
     private logTrade(reason: string, pnlPt: number, netPnlU: number) {

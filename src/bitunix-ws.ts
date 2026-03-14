@@ -1,8 +1,8 @@
 /**
- * 🔌 Bitunix WebSocket 数据引擎 — SOL 狙击手 v2.0
+ * 🔌 Bitunix WebSocket 数据引擎 — V52.2 Fee Shield Recovery
  * ═══════════════════════════════════════════════════════
  * 三币种订阅: SOLUSDT + ETHUSDT + BTCUSDT
- * BTC 领路 → 自动比较 SOL vs ETH 效率 → 切换最优交易对
+ * 新增: ETH spread/depth, Delta 方向追踪 (CVD 方向一致性)
  */
 
 import {
@@ -16,7 +16,7 @@ function log(msg: string) {
 }
 
 // ═══════════════════════════════════════════════
-// 因果快照 — 三币种数据
+// 因果快照 — 三币种数据 + V52.2 新增字段
 // ═══════════════════════════════════════════════
 
 export interface CausalSnapshot {
@@ -56,6 +56,14 @@ export interface CausalSnapshot {
     ethEfficiency: number;
     ethAvgEfficiency: number;
     ethConnected: boolean;
+
+    // ── V52.2 新增 ──
+    ethSpread: number;           // ETH 点差
+    ethBestAsk: number;          // ETH 最佳卖价
+    ethBestBid: number;          // ETH 最佳买价
+    ethTop3Depth: number;        // ETH Ask Top3 深度总量
+    recentDeltaDirs: number[];   // 最近 N 笔 Delta 方向 (+1=买, -1=卖)
+    ethRecentDeltaDirs: number[];// ETH 最近 N 笔 Delta 方向
 }
 
 // ═══════════════════════════════════════════════
@@ -72,6 +80,7 @@ class SymbolTracker {
     bestBid = 0;
     askWallVol = 0;
     bidWallVol = 0;
+    top3Depth = 0;              // V52.2: Ask Top3 深度
 
     deltaRing: { ts: number; buyVol: number; sellVol: number; efficiency: number; vol: number }[] = [];
     readonly DELTA_WINDOW_MS = 10_000;
@@ -79,6 +88,10 @@ class SymbolTracker {
     efficiencyRing: number[] = [];
     volRing: number[] = [];
     lastPrice = 0;
+
+    // V52.2: Delta 方向追踪 (+1=买入主导, -1=卖出主导)
+    deltaDirRing: number[] = [];
+    readonly DELTA_DIR_MAX = 10;  // 保留最近 10 笔
 
     constructor(symbol: string) {
         this.symbol = symbol;
@@ -117,6 +130,11 @@ class SymbolTracker {
         return this.deltaRing[this.deltaRing.length - 1]?.vol ?? 0;
     }
 
+    /** V52.2: 获取最近 N 笔 Delta 方向 */
+    getRecentDeltaDirs(): number[] {
+        return this.deltaDirRing.slice(-this.DELTA_DIR_MAX);
+    }
+
     handleTrade(trades: any) {
         const now = Date.now();
         const tradeList = Array.isArray(trades) ? trades : [trades];
@@ -153,6 +171,10 @@ class SymbolTracker {
             this.volRing.push(qty);
             if (this.volRing.length > AVG_VOL_WINDOW) this.volRing.shift();
 
+            // V52.2: 记录 Delta 方向
+            this.deltaDirRing.push(isBuyer ? 1 : -1);
+            if (this.deltaDirRing.length > this.DELTA_DIR_MAX) this.deltaDirRing.shift();
+
             this.lastPrice = tradePrice;
         }
     }
@@ -166,18 +188,20 @@ class SymbolTracker {
             log(`🔍 [${this.symbol}] Depth 原始数据: asks=${JSON.stringify(asks.slice(0, 2))} bids=${JSON.stringify(bids.slice(0, 2))}`);
         }
         if (this.askWallVol === 0 && asks.length === 0 && bids.length === 0) {
-            // 可能 key 不对，打印整个 depthData 的 keys
             log(`⚠️ [${this.symbol}] Depth asks/bids 为空! keys=${JSON.stringify(Object.keys(depthData || {}))} raw=${JSON.stringify(depthData).slice(0, 300)}`);
         }
 
         let askVol = 0;
+        let top3 = 0;  // V52.2: Top3 深度
         for (let i = 0; i < Math.min(5, asks.length); i++) {
             const entry = asks[i];
             const vol = +(Array.isArray(entry) ? entry[1] : entry?.sz || entry?.qty || entry?.v || 0);
             if (i === 0) this.bestAsk = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
             askVol += vol;
+            if (i < 3) top3 += vol;  // V52.2: 只累加前 3 档
         }
         this.askWallVol = askVol;
+        this.top3Depth = top3;
 
         let bidVol = 0;
         for (let i = 0; i < Math.min(5, bids.length); i++) {
@@ -269,7 +293,7 @@ export class BitunixWSEngine {
     }
 
     // ═══════════════════════════════════════════════
-    // 因果快照 — 三币种数据
+    // 因果快照 — 三币种数据 + V52.2 新增
     // ═══════════════════════════════════════════════
 
     getSnapshot(): CausalSnapshot {
@@ -328,6 +352,15 @@ export class BitunixWSEngine {
             ethEfficiency,
             ethAvgEfficiency,
             ethConnected: this.eth.price > 0,
+
+            // V52.2 新增
+            ethSpread: this.eth.bestAsk > 0 && this.eth.bestBid > 0
+                ? this.eth.bestAsk - this.eth.bestBid : 999,
+            ethBestAsk: this.eth.bestAsk,
+            ethBestBid: this.eth.bestBid,
+            ethTop3Depth: this.eth.top3Depth,
+            recentDeltaDirs: this.sol.getRecentDeltaDirs(),
+            ethRecentDeltaDirs: this.eth.getRecentDeltaDirs(),
         };
     }
 
