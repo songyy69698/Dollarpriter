@@ -32,7 +32,7 @@ class LeviathanBot {
     private executor: BitunixExecutor;
     private candles: CandleTracker;
 
-    private paused = true;
+    private paused = false;    // V66: 默认激活, 不需发1
     private startTime = Date.now();
     private dailyTrades = 0;
     private dailyPnl = 0;
@@ -60,29 +60,36 @@ class LeviathanBot {
         log("  📡 三币种: SOL + BTC + ETH");
         log("════════════════════════════════════════════");
 
-        this.ws.start();
+        // Step 1: 先预加载 K线 (比 WS 先启动)
+        await this.candles.bootstrap();
         this.candles.start();
-        await this.waitForData();
+
+        // Step 2: 启动 WS 数据流
+        this.ws.start();
+        await this.waitForWS();
 
         const bal = await this.executor.getBalance();
         this.currentBalance = bal;
         const margin = getMargin(bal);
+        const cs = this.candles.getSnapshot();
 
         log(`  💰 余额: $${bal.toFixed(2)}`);
         log(`  📊 ${ETH_SYMBOL} | ${LEVERAGE}x 杠杆 | M=$${margin}`);
         log(`  🐋 入场: 15M突破 + BTC≥${BTC_ENTRY_RATIO}x`);
+        log(`  📊 H2=$${cs.highest2_15m.toFixed(2)} | L2=$${cs.lowest2_15m.toFixed(2)}`);
         log(`  🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt`);
         log(`  ⚔️ Iron Guard: prev15M ±${STRUCT_SL_BUFFER}pt (1M确认)`);
         log(`  💎 复利: $20→$60→$150→$400`);
         log("════════════════════════════════════════════");
 
         await notifyTG(
-            `🐋 *Dollarprinter V66 — LEVIATHAN*\n` +
-            `余额: $${bal.toFixed(2)} | ${LEVERAGE}x | M=$${margin}\n` +
+            `🐋 *V66 LEVIATHAN 已激活*\n` +
+            `💰 $${bal.toFixed(2)} | ${LEVERAGE}x | M=$${margin}\n` +
+            `📊 H2=$${cs.highest2_15m.toFixed(2)} | L2=$${cs.lowest2_15m.toFixed(2)}\n` +
             `🐋 15M突破 + BTC≥${BTC_ENTRY_RATIO}x\n` +
             `🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt\n` +
-            `⚔️ Iron Guard: 15M结构 ±${STRUCT_SL_BUFFER}pt\n` +
-            `⚠️ 暂停中, 发 1 激活`,
+            `⚔️ Iron Guard ±${STRUCT_SL_BUFFER}pt\n` +
+            `🟢 自动扫描中...`,
         );
 
         // 🔄 启动时自动接管现有仓位
@@ -106,28 +113,18 @@ class LeviathanBot {
         setInterval(async () => {
             this.currentBalance = await this.executor.getBalance();
         }, 60_000);
-        log("🟢 V66 就绪 — 等待 CEO 激活 (Telegram 发 1)");
+        log("🟢 V66 就绪 — 自动扫描中");
     }
 
-    private async waitForData() {
-        while (true) {
+    private async waitForWS() {
+        let waited = 0;
+        while (waited < 30) {
             const s = this.ws.getSnapshot();
             if (s.connected && s.price > 0) break;
             await Bun.sleep(1000);
-        }
-        log("📡 WS 数据流就绪");
-
-        // 等 K线数据
-        let waited = 0;
-        while (!this.candles.ready && waited < 30) {
-            await Bun.sleep(1000);
             waited++;
         }
-        if (this.candles.ready) {
-            log("📊 K线数据就绪");
-        } else {
-            log("⚠️ K线数据超时, 继续启动 (后台轮询中)");
-        }
+        log("📡 WS 数据流就绪");
     }
 
     // ═══════════════════════════════════════
