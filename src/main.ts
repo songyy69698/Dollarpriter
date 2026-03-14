@@ -151,11 +151,14 @@ class CausalArbitrageBot {
                 log(`✅ ${modeLabel} ${sig.side.toUpperCase()} ${coinName} @ ${sig.price.toFixed(prec.price)} M=$${sig.margin}`);
 
                 // V52.4 延迟诊断 TG 通知
-                await notifyTG(
+                let diagMsg =
                     `📡 *订单诊断*\n` +
                     `⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n` +
-                    `[DRIFT] Signal: ${this.executor.signalPrice.toFixed(prec.price)} | Fill: ${this.executor.entryPrice.toFixed(prec.price)} | Slip: ${this.executor.lastSlippage.toFixed(prec.price)}pt`,
-                );
+                    `[DRIFT] Signal: ${this.executor.signalPrice.toFixed(prec.price)} | Fill: ${this.executor.entryPrice.toFixed(prec.price)} | Slip: ${this.executor.lastSlippage.toFixed(prec.price)}pt`;
+                if (this.executor.highSlippage) {
+                    diagMsg += `\n🚨 *HIGH SLIPPAGE* — 15s Hold 已取消, 激进出场 BE+1pt`;
+                }
+                await notifyTG(diagMsg);
 
                 await Bun.sleep(500);
                 await this.executor.syncPositions();

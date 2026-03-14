@@ -49,6 +49,7 @@ export class BitunixExecutor {
     lastSlMs = 0;             // 最近 SL 订单往返时间
     lastSlippage = 0;         // 最近滑点 (pt)
     signalPrice = 0;          // 信号价格 (entry signal)
+    highSlippage = false;     // 🚨 高滑点模式: 取消 15s Hold + 激进出场
 
     constructor(apiKey: string, secretKey: string) {
         this.apiKey = apiKey;
@@ -116,8 +117,12 @@ export class BitunixExecutor {
         this.lastSlippage = slippage;
         this.signalPrice = currentPrice;
 
+        // 🚨 Slippage Cap: 滑点 > 1.5pt 触发激进出场模式
+        const HIGH_SLIPPAGE_PT = 1.5;
+        this.highSlippage = slippage > HIGH_SLIPPAGE_PT;
+
         log(`✅ MARKET ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} [${targetSymbol}] (${ms.toFixed(0)}ms)`);
-        log(`[DRIFT] SignalPrice: ${currentPrice.toFixed(prec.price)} | FillPrice: ${actualPrice.toFixed(prec.price)} | Slippage: ${slippage.toFixed(prec.price)}pt`);
+        log(`[DRIFT] SignalPrice: ${currentPrice.toFixed(prec.price)} | FillPrice: ${actualPrice.toFixed(prec.price)} | Slippage: ${slippage.toFixed(prec.price)}pt${this.highSlippage ? " 🚨 HIGH" : ""}`);
 
         this.inPosition = true;
         this.positionSide = side;
@@ -188,7 +193,8 @@ export class BitunixExecutor {
             : this.entryPrice - currentPrice;
 
         const elapsed = Date.now() - this.entryTs;
-        const holdSafe = elapsed >= MIN_HOLD_MS;  // V52.4: 15秒保护期
+        // V52.4: 高滑点时取消 15s Hold 保护
+        const holdSafe = this.highSlippage ? true : (elapsed >= MIN_HOLD_MS);
         let reason = "";
 
         // ═══ Layer 1: 硬止损 — 永远有效，8pt ═══
@@ -201,21 +207,26 @@ export class BitunixExecutor {
             reason = `💰 硬止盈: +${pnlPt.toFixed(prec.price)}pt (TP=${TP_POINTS}pt)`;
         }
 
+        // ═══ Layer 2.5: 🚨 高滑点激进出场 — BE+1pt 就跑 ═══
+        if (!reason && this.highSlippage && pnlPt >= 1.0) {
+            reason = `🚨 高滑点激进出场 [Slip=${this.lastSlippage.toFixed(2)}pt]: BE+${pnlPt.toFixed(prec.price)}pt`;
+        }
+
         // ═══ Layer 3: 20 分钟硬超时 — 无条件平仓 ═══
         if (!reason && elapsed >= HARD_TIMEOUT_MS) {
             reason = `⏰ 超时平仓: ${(elapsed / 60_000).toFixed(1)}min (limit=20min) ${pnlPt >= 0 ? "+" : ""}${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // ═══ 以下出场受 双重保护: holdSafe(15s) + FeeShield(5pt) ═══
+        // ═══ 以下出场受 双重保护: holdSafe(15s，高滑点跳过) + FeeShield(5pt) ═══
 
-        // Layer 4: 放量倒货止盈 — 15s + Fee Shield 5pt
+        // Layer 4: 放量倒货止盈
         if (!reason && holdSafe && efficiency < DUMP_EFF_THRESHOLD && recentVol > avgVol * DUMP_VOL_MULT && pnlPt >= FEE_SHIELD_POINTS) {
-            reason = `💰 放量倒货 [15s✅+FeeShield✅]: eff=${efficiency.toFixed(4)}<${DUMP_EFF_THRESHOLD} +${pnlPt.toFixed(prec.price)}pt`;
+            reason = `💰 放量倒货 [${this.highSlippage ? "🚨Slip" : "15s✅"}+FeeShield✅]: eff=${efficiency.toFixed(4)}<${DUMP_EFF_THRESHOLD} +${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // Layer 5: 效率衰竭止盈 — 15s + Fee Shield 5pt
+        // Layer 5: 效率衰竭止盈
         if (!reason && holdSafe && efficiencyDecay && pnlPt >= FEE_SHIELD_POINTS) {
-            reason = `💰 效率衰竭 [15s✅+FeeShield✅]: +${pnlPt.toFixed(prec.price)}pt`;
+            reason = `💰 效率衰竭 [${this.highSlippage ? "🚨Slip" : "15s✅"}+FeeShield✅]: +${pnlPt.toFixed(prec.price)}pt`;
         }
 
         // ═══ 执行平仓 ═══
