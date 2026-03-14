@@ -161,8 +161,8 @@ export class BitunixExecutor {
             return false;
         }
 
-        // Step 2: 预设杠杆 200x
-        await this.setLeverage(targetSymbol, LEVERAGE);
+        // Step 2: 设置交易环境 (逊仓 + 杠杆 200x)
+        await this.setupTradeEnv(targetSymbol);
 
         const qty = +((margin * LEVERAGE) / currentPrice).toFixed(prec.qty);
         if (qty <= 0) { this._entering = false; return false; }
@@ -518,7 +518,7 @@ export class BitunixExecutor {
             });
             const json = (await res.json()) as any;
             if (String(json?.code) === "0") {
-                log(`✅ 杠杆已设置: ${symbol} ${leverage}x`);
+                log(`✅ 杠杆: ${symbol} ${leverage}x`);
                 return true;
             }
             log(`⚠️ 设置杠杆失败 [${symbol}]: code=${json?.code} msg=${json?.msg}`);
@@ -527,6 +527,38 @@ export class BitunixExecutor {
             log(`❌ 设置杠杆异常: ${e}`);
             return false;
         }
+    }
+
+    // ═══ 逐仓模式 ═══
+    private async setMarginMode(symbol: string, mode: "ISOLATION" | "CROSS"): Promise<boolean> {
+        try {
+            const body = JSON.stringify({ marginCoin: "USDT", symbol, marginMode: mode });
+            const headers = this.sign("", body);
+            const res = await fetch(`${BITUNIX_BASE}/api/v1/futures/account/change_margin_mode`, {
+                method: "POST",
+                headers: { ...headers, "Content-Type": "application/json", language: "en-US" },
+                body,
+            });
+            const json = (await res.json()) as any;
+            if (String(json?.code) === "0") {
+                log(`✅ 保证金模式: ${symbol} ${mode}`);
+                return true;
+            }
+            // code=1 通常表示已经是该模式, 不算失败
+            log(`⚠️ 保证金模式 [${symbol}]: code=${json?.code} msg=${json?.msg}`);
+            return String(json?.code) === "1";  // 已经是该模式也算成功
+        } catch (e) {
+            log(`❌ 设置保证金模式异常: ${e}`);
+            return false;
+        }
+    }
+
+    // ═══ 🔧 一键设置交易环境 (启动时和下单前调用) ═══
+    async setupTradeEnv(symbol: string): Promise<void> {
+        log(`🔧 设置交易环境: ${symbol}`);
+        await this.setMarginMode(symbol, "ISOLATION");  // 逐仓
+        await this.setLeverage(symbol, LEVERAGE);        // 200x
+        log(`🔧 交易环境就绪: ${symbol} | ISOLATION | ${LEVERAGE}x`);
     }
 
     private async closePosition(

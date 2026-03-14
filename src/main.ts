@@ -92,6 +92,9 @@ class LeviathanBot {
             `🟢 自动扫描中...`,
         );
 
+        // 🔧 启动时预设交易环境 (逐仓 + 200x)
+        await this.executor.setupTradeEnv(ETH_SYMBOL);
+
         // 🔄 启动时自动接管现有仓位
         const recovered = await this.executor.recoverPositions();
         if (recovered) {
