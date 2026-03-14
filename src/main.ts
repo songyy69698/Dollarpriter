@@ -269,20 +269,74 @@ class CausalArbitrageBot {
                 },
                 h: async () => {
                     await notifyTG(
-                        `📖 *V52.2 Fee Shield*\n1 启动\n0 暂停\ns 状态\nx 强平\nh 帮助`,
+                        `📖 *V52.4 Logic Leader*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
                 "/help": async () => {
                     await notifyTG(
-                        `📖 *V52.4 Logic Leader*\n1 启动\n0 暂停\ns 状态\nx 强平\nh 帮助`,
+                        `📖 *V52.4 Logic Leader*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
+                d: async () => { await this.sendDiagnostics(); },
+                "/diag": async () => { await this.sendDiagnostics(); },
             });
         }
     }
 
     // ═══════════════════════════════════════
-    // 状态面板 — V52.2
+    // 📡 连线诊断报告 — TG 命令 `d`
+    // ═══════════════════════════════════════
+
+    private async sendDiagnostics() {
+        const s = this.ws.getSnapshot();
+
+        let m = `📡 *【连线诊断报告】*\n`;
+        m += `──────────────\n`;
+
+        // WS 数据源延迟
+        m += `🕒 *数据源延迟 (Bitunix WS → Bot):*\n`;
+        m += `   当前: ${s.wsLatencyMs}ms | 平均: ${s.wsLatencyAvg}ms | 最大: ${s.wsLatencyMax}ms\n`;
+        if (s.wsLatencyAvg > 200) {
+            m += `   ⚠️ 延迟过高，请检查伺服器网路\n`;
+        } else {
+            m += `   🟢 数据极速\n`;
+        }
+
+        // 执行延迟
+        m += `\n⚡ *执行延迟 (Bot → Bitunix API):*\n`;
+        if (this.executor.lastEntryMs > 0) {
+            m += `   Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n`;
+            if (this.executor.lastEntryMs > 500) {
+                m += `   ⚠️ Bitunix 回报缓慢\n`;
+            } else {
+                m += `   🟢 接口正常\n`;
+            }
+        } else {
+            m += `   尚无订单数据\n`;
+        }
+
+        // 滑点
+        m += `\n📉 *滑点诊断:*\n`;
+        if (this.executor.signalPrice > 0) {
+            m += `   Signal: ${this.executor.signalPrice.toFixed(2)} → Fill: ${this.executor.entryPrice.toFixed(2)}\n`;
+            m += `   Slippage: ${this.executor.lastSlippage.toFixed(2)}pt${this.executor.highSlippage ? " 🚨 HIGH" : " 🟢"}\n`;
+            if (this.executor.highSlippage) {
+                m += `   ⚠️ 激进出场模式已启动 (BE+1pt)\n`;
+            }
+        } else {
+            m += `   尚无成交数据\n`;
+        }
+
+        // 高延迟统计
+        m += `\n📊 *累计统计:*\n`;
+        m += `   高延迟(>200ms): ${s.highLatencyCount}次\n`;
+        m += `──────────────`;
+
+        await notifyTG(m);
+    }
+
+    // ═══════════════════════════════════════
+    // 状态面板 — V52.4
     // ═══════════════════════════════════════
 
     private async sendStatus() {
