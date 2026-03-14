@@ -487,7 +487,7 @@ export class BitunixExecutor {
         const body = JSON.stringify(sorted);
         const headers = this.sign("", body);
         try {
-            const res = await fetch(`${BITUNIX_BASE}/api/v1/futures/order/create`, {
+            const res = await fetch(`${BITUNIX_BASE}/api/v1/futures/trade/place_order`, {
                 method: "POST",
                 headers: { ...headers, "Content-Type": "application/json", language: "en-US" },
                 body,
@@ -581,7 +581,7 @@ export class BitunixExecutor {
         try {
             const body = JSON.stringify({ symbol, orderId });
             const headers = this.sign("", body);
-            await fetch(`${BITUNIX_BASE}/api/v1/futures/order/cancel`, {
+            await fetch(`${BITUNIX_BASE}/api/v1/futures/trade/cancel_orders`, {
                 method: "POST",
                 headers: { ...headers, "Content-Type": "application/json", language: "en-US" },
                 body,
