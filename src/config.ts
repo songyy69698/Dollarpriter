@@ -33,18 +33,18 @@ export const TAKER_FEE = 0.0004;
 // 15M 结构性入场
 // ═══════════════════════════════════════
 export const BTC_ENTRY_RATIO = 4.0;            // BTC Lead 入场门槛
-export const CANDLE_LOOKBACK = 2;              // 看最近 2 根 15M K线
+export const CANDLE_LOOKBACK = 4;              // V-FINAL: 看最近 4 根 15M K线 (更严格入场)
 export const CANDLE_POLL_MS = 30_000;          // K线轮询间隔 30s
 
 // ═══════════════════════════════════════
 // Iron Guard — 结构性出场
 // ═══════════════════════════════════════
-export const STRUCT_SL_BUFFER = 1.5;           // 结构止损缓冲 (prev 15M high/low ±1.5pt)
+export const STRUCT_SL_BUFFER = 0;             // V-FINAL: 无缓冲 (精确 prev 15M High/Low)
 
 // ═══════════════════════════════════════
 // Zero-Risk Gate
 // ═══════════════════════════════════════
-export const ZERO_RISK_THRESHOLD = 20.0;       // 利润 ≥ 20pt → SL移到entry+1pt
+export const ZERO_RISK_THRESHOLD = 15.0;       // V-FINAL: 利润 ≥ 15pt → SL移到entry+1pt
 export const ZERO_RISK_SL_OFFSET = 1.0;        // Zero-Risk SL偏移
 
 // ═══════════════════════════════════════
