@@ -26,13 +26,13 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 // ═══════════════════════════════════════
 export const LEVERAGE = 200;
 export const ALLOW_SHORT = true;
-export const SL_POINTS = 8.0;                  // 初始硬止损 8pt (永远有效)
+export const SL_POINTS = 12.0;                 // CEO校准: 12pt 硬止损 (200x呼吸空间)
 export const TAKER_FEE = 0.0004;
 
 // ═══════════════════════════════════════
 // 15M 结构性入场
 // ═══════════════════════════════════════
-export const BTC_ENTRY_RATIO = 4.0;            // BTC Lead 入场门槛
+export const BTC_ENTRY_RATIO = 2.5;            // CEO校准: 2.5x (提高灵敏度)
 export const CANDLE_LOOKBACK = 4;              // V-FINAL: 看最近 4 根 15M K线 (更严格入场)
 export const CANDLE_POLL_MS = 30_000;          // K线轮询间隔 30s
 
@@ -44,7 +44,7 @@ export const STRUCT_SL_BUFFER = 0;             // V-FINAL: 无缓冲 (精确 pre
 // ═══════════════════════════════════════
 // Zero-Risk Gate
 // ═══════════════════════════════════════
-export const ZERO_RISK_THRESHOLD = 15.0;       // V-FINAL: 利润 ≥ 15pt → SL移到entry+1pt
+export const ZERO_RISK_THRESHOLD = 10.0;       // CEO校准: 10pt 即移SL到entry+1pt
 export const ZERO_RISK_SL_OFFSET = 1.0;        // Zero-Risk SL偏移
 
 // ═══════════════════════════════════════
