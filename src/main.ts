@@ -83,7 +83,7 @@ class LeviathanBot {
         log("════════════════════════════════════════════");
 
         await notifyTG(
-            `🐋 *V66 LEVIATHAN 已激活*\n` +
+            `🐋 *V66 LEVIATHAN (CEO校准版) 已激活*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x | M=$${margin}\n` +
             `📊 H2=$${cs.highest2_15m.toFixed(2)} | L2=$${cs.lowest2_15m.toFixed(2)}\n` +
             `🐋 15M突破 + BTC≥${BTC_ENTRY_RATIO}x\n` +
@@ -220,11 +220,11 @@ class LeviathanBot {
             lastId = await pollTGCommands(lastId, {
                 "1": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V66 LEVIATHAN 激活*\n15M 结构性趋势扫描中...`);
+                    await notifyTG(`✅ *V66 LEVIATHAN (CEO校准版) 激活*\n15M 结构性趋势扫描中...`);
                 },
                 "/start": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V66 LEVIATHAN 激活*\n15M 结构性趋势扫描中...`);
+                    await notifyTG(`✅ *V66 LEVIATHAN (CEO校准版) 激活*\n15M 结构性趋势扫描中...`);
                 },
                 "0": async () => {
                     this.paused = true;
@@ -268,12 +268,12 @@ class LeviathanBot {
                 },
                 h: async () => {
                     await notifyTG(
-                        `📖 *V66 LEVIATHAN*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
+                        `📖 *V66 LEVIATHAN (CEO校准版)*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
                 "/help": async () => {
                     await notifyTG(
-                        `📖 *V66 LEVIATHAN*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
+                        `📖 *V66 LEVIATHAN (CEO校准版)*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
             });
@@ -323,7 +323,7 @@ class LeviathanBot {
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
         const cs = this.candles.getSnapshot();
 
-        let m = `🐋 *V66 LEVIATHAN*\n`;
+        let m = `🐋 *V66 LEVIATHAN (CEO校准版)*\n`;
         m += `──────────────\n`;
         m += `💰 余额: $${b.toFixed(2)} | M=$${margin}\n`;
         m += `🔌 WS: ${s.connected ? "🟢" : "🔴"} | ${this.paused ? "🔴暂停" : "🟢运行"}\n`;
@@ -368,7 +368,7 @@ class LeviathanBot {
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
         const cs = this.candles.getSnapshot();
 
-        let m = `💓 *V66 LEVIATHAN*\n`;
+        let m = `💓 *V66 LEVIATHAN (CEO校准版)*\n`;
         m += `${uptimeH}h${uptimeM}m | ${this.paused ? "🔴" : "🟢"}\n`;
         m += `ETH $${s.ethPrice.toFixed(2)} | BTC $${s.btcPrice.toFixed(1)}\n`;
         m += `15M: H2=$${cs.highest2_15m.toFixed(2)} L2=$${cs.lowest2_15m.toFixed(2)}\n`;
