@@ -11,6 +11,7 @@ import {
     STRUCT_SL_BUFFER, ZERO_RISK_THRESHOLD, ZERO_RISK_SL_OFFSET,
     ABSORPTION_RATIO_MIN, ABSORPTION_PRICE_TOL,
     BID_WALL_DROP_THRESH, V75_EXIT_PROFIT_MIN,
+    MIN_HOLD_MS,
 } from "./config";
 
 function log(msg: string) {
@@ -296,9 +297,14 @@ export class BitunixExecutor {
         const elapsed = Date.now() - this.entryTs;
         let reason = "";
 
-        // ═══ Layer 1: 硬止损 — 永远有效, 10pt ═══
+        // ═══ Layer 1: 硬止损 — 永远有效, 4pt (强平前触发) ═══
         if (pnlPt <= -SL_POINTS) {
             reason = `📉 硬止损: ${pnlPt.toFixed(prec.price)}pt (SL=${SL_POINTS}pt)`;
+        }
+
+        // ═══ 最短持仓保护: 硬止损以外的出场在 30s 内不触发 ═══
+        if (!reason && elapsed < MIN_HOLD_MS) {
+            return { closed: false, reason: "", netPnlU: 0, symbol: "" };
         }
 
         // ═══ Layer 2: 高滑点激进出场 — BE+1pt ═══

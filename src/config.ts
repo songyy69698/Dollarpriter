@@ -41,7 +41,7 @@ export const CANDLE_POLL_MS = 30_000;
 // ═══════════════════════════════════════
 // V75 能量 vs 阻力参数
 // ═══════════════════════════════════════
-export const BREAKOUT_POWER_MIN = 3.0;     // 入场：能量/L1牆 ≥ 3x (牆体坍塌)
+export const BREAKOUT_POWER_MIN = 10.0;    // 入场：能量/L1牆 ≥ 10x (牆体坍塌) [V75修正: 3x太低]
 export const ABSORPTION_RATIO_MIN = 3.0;   // 止盈：牆/能量 ≥ 3x (能量吸收)
 export const ABSORPTION_PRICE_TOL = 0.02;  // 止盈：价格静止容差
 export const BID_WALL_DROP_THRESH = -0.6;  // 防御：牆-60%触发撤单防御
@@ -87,7 +87,8 @@ export function getMargin(balance: number): number {
 // ═══════════════════════════════════════
 // 冷却 & 安全
 // ═══════════════════════════════════════
-export const COOLDOWN_MS = 30_000;             // V69: 冷却 30s (15M策略不需太短)
+export const COOLDOWN_MS = 120_000;            // V75修正: 冷却 120s (防连续亏损)
+export const MIN_HOLD_MS = 30_000;             // V75修正: 最少持仓 30s (防2秒刷费)
 export const WS_LAG_MAX_MS = 500;
 export const MAX_DAILY_TRADES = 10;
 export const MAX_DAILY_LOSS = 100;
