@@ -82,7 +82,7 @@ export function getMargin(balance: number): number {
 export const COOLDOWN_MS = 120_000;            // 120s 冷却
 export const MIN_HOLD_MS = 30_000;             // 最少持仓 30s
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 3;             // $400本金, 放宽到 3 单
+export const MAX_DAILY_TRADES = 0;             // 🔒 今天不再开单
 export const MAX_DAILY_LOSS = 60;              // $400本金: 日亏换上限 $60
 
 // ═══════════════════════════════════════

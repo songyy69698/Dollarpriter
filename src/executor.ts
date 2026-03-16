@@ -197,8 +197,7 @@ export class BitunixExecutor {
             symbol: targetSymbol,
             side: side === "long" ? "BUY" : "SELL",
             tradeSide: "OPEN",
-            orderType: "LIMIT",
-            price: currentPrice.toFixed(prec.price),
+            orderType: "MARKET",
             qty: qty.toFixed(1),
             clientId: tag,
         };
