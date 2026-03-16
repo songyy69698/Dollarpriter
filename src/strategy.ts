@@ -1,7 +1,7 @@
 /**
- * 🧠 V66 "LEVIATHAN" — 策略引擎
+ * 🧠 V69 "NO-EXCUSE" — 200x 绝地狙击策略引擎
  * ═══════════════════════════════════════════════
- * 15M 结构性突破入场:
+ * 4重过滤: 15M突破 + BTC 5.5x + 牆比 4.5x + 效率 1.2x
  *   SHORT: Price < lowest(Low, 2根15M) AND BTC_Lead ≥ 4.0x
  *   LONG:  Price > highest(High, 2根15M) AND BTC_Lead ≥ 4.0x
  *
@@ -14,7 +14,7 @@ import {
     COOLDOWN_MS, WS_LAG_MAX_MS,
     ALLOW_SHORT, BTC_ENTRY_RATIO,
     ETH_SYMBOL, MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
-    WALL_RATIO_MIN,
+    WALL_RATIO_MIN, EFFICIENCY_MIN,
     getMargin,
 } from "./config";
 
@@ -66,6 +66,10 @@ export class CausalStrategy {
         // ═══ Depth Gate ═══
         if (snap.ethTop3Depth < MIN_DEPTH_ETH) return null;
 
+        // ═══ ETH 效率检查 (V69) ═══
+        const ethEff = snap.ethEfficiency;
+        if (ethEff < EFFICIENCY_MIN) return null;
+
         // ═══ BTC Lead 强度 ═══
         const btcBuy = snap.btcBuyDelta;
         const btcSell = snap.btcSellDelta;
@@ -102,7 +106,7 @@ export class CausalStrategy {
             const reason =
                 `🐋 15M突破SHORT: $${ethPrice.toFixed(2)} < L2=${lowest2_15m.toFixed(2)} | ` +
                 `BTC卖压=${btcSellRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
-                `牆=${wallAskRatio.toFixed(1)}x≥${WALL_RATIO_MIN}x | ` +
+                `牆=${wallAskRatio.toFixed(1)}x | 效=${ethEff.toFixed(2)} | ` +
                 `Guard=${prev15mHigh.toFixed(2)}`;
             log(reason);
             return {
@@ -124,7 +128,7 @@ export class CausalStrategy {
             const reason =
                 `🐋 15M突破LONG: $${ethPrice.toFixed(2)} > H2=${highest2_15m.toFixed(2)} | ` +
                 `BTC买压=${btcBuyRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
-                `牆=${wallBidRatio.toFixed(1)}x≥${WALL_RATIO_MIN}x | ` +
+                `牆=${wallBidRatio.toFixed(1)}x | 效=${ethEff.toFixed(2)} | ` +
                 `Guard=${prev15mLow.toFixed(2)}`;
             log(reason);
             return {

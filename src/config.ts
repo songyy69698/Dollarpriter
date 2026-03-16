@@ -1,7 +1,7 @@
 /**
- * ⚙️ V66 "LEVIATHAN" — 配置参数
+ * ⚙️ V69 "NO-EXCUSE" — 200x 绝地狙击配置
  * ═══════════════════════════════════════
- * 15M 结构性趋势交易 + Iron Guard + 复利
+ * $31 残局绝地反击 + 绝对因果 + 光速保本
  */
 
 // ═══════════════════════════════════════
@@ -26,14 +26,15 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 // ═══════════════════════════════════════
 export const LEVERAGE = 200;
 export const ALLOW_SHORT = true;
-export const SL_POINTS = 12.0;                 // CEO校准: 12pt 硬止损 (200x呼吸空间)
+export const SL_POINTS = 10.0;                 // V69: 10pt 硬止损 (200x生存极限)
 export const TAKER_FEE = 0.0004;
 
 // ═══════════════════════════════════════
 // 15M 结构性入场
 // ═══════════════════════════════════════
-export const BTC_ENTRY_RATIO = 2.5;            // CEO校准: 2.5x (提高灵敏度)
-export const WALL_RATIO_MIN = 2.0;             // V69: 买卖牆比 ≥ 2.0 才入场
+export const BTC_ENTRY_RATIO = 5.5;            // V69: 5.5x 只抓大户清场的「真因」
+export const WALL_RATIO_MIN = 4.5;             // V69: 買賣牆比 ≥ 4.5x 才准进场
+export const EFFICIENCY_MIN = 1.2;             // V69: 效率 ≥ 1.2 才进场
 export const CANDLE_LOOKBACK = 4;              // V-FINAL: 看最近 4 根 15M K线 (更严格入场)
 export const CANDLE_POLL_MS = 30_000;          // K线轮询间隔 30s
 
@@ -45,8 +46,8 @@ export const STRUCT_SL_BUFFER = 0;             // V-FINAL: 无缓冲 (精确 pre
 // ═══════════════════════════════════════
 // Zero-Risk Gate
 // ═══════════════════════════════════════
-export const ZERO_RISK_THRESHOLD = 10.0;       // CEO校准: 10pt 即移SL到entry+1pt
-export const ZERO_RISK_SL_OFFSET = 1.0;        // Zero-Risk SL偏移
+export const ZERO_RISK_THRESHOLD = 8.0;        // V69: 8pt 光速保本
+export const ZERO_RISK_SL_OFFSET = 1.0;        // 保本SL偏移 (entry+1pt)
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate
@@ -57,7 +58,7 @@ export const MIN_DEPTH_ETH = 50;
 // ═══════════════════════════════════════
 // 复利保证金阶梯
 // ═══════════════════════════════════════
-export const MARGIN_DEFAULT = 20;              // 基础 $20 (余额 <$500)
+export const MARGIN_DEFAULT = 15;              // V69: $15 (剩$31分成2颗子弹)
 export const MARGIN_TIERS: { minBalance: number; margin: number }[] = [
     { minBalance: 2000, margin: 400 },
     { minBalance: 1000, margin: 150 },
