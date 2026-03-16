@@ -26,7 +26,7 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 // ═══════════════════════════════════════
 export const LEVERAGE = 200;
 export const ALLOW_SHORT = true;
-export const SL_POINTS = 10.0;                 // V69: 10pt 硬止损 (200x生存极限)
+export const SL_POINTS = 4.0;                  // V75: 4pt 硬止损 (200x强平≈5.3pt, SL必须在强平前)
 export const TAKER_FEE = 0.0004;
 
 // ═══════════════════════════════════════
