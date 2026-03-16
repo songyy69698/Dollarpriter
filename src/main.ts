@@ -25,7 +25,7 @@ function log(msg: string) {
 }
 
 // ═══ 熔断器常量 ═══
-const CIRCUIT_BREAKER_BALANCE = 300; // $300 以下自动切防御模式
+const CIRCUIT_BREAKER_BALANCE = 200; // $200 以下才切防御
 
 class LeviathanBot {
     private ws: BitunixWSEngine;

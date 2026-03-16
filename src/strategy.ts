@@ -97,15 +97,14 @@ export class CausalStrategy {
         let marginMode: string;
 
         if (this._defenseMode) {
-            // 熔断器: 防御模式
             margin = 20;
             marginMode = "🛡️DEFENSE";
-        } else if (btcLead >= 12 && trendAligned) {
+        } else if (btcLead >= 15 && trendAligned) {
             margin = 100;
-            marginMode = "🎯SNIPER";
+            marginMode = "🐋 WHALE";
         } else {
-            margin = 30;
-            marginMode = "⚡SCALP";
+            margin = 60;
+            marginMode = "🚀OFFENSE";
         }
 
         // 余额安全检查: margin 不超过余额的 25%
@@ -171,14 +170,16 @@ export class CausalStrategy {
 
         // --- LONG ---
         const breakoutLong = instantVol / Math.max(l1Ask, 0.001);
+        const wallSmashLong = btcBuyRatio >= 15;
         if (
             btcBuyRatio >= dynamicBtcThreshold &&
-            breakoutLong >= BREAKOUT_POWER_MIN &&
-            wallRatio > ENTRY_WALL_RATIO_LONG
+            (breakoutLong >= BREAKOUT_POWER_MIN || wallSmashLong) &&
+            (wallRatio > ENTRY_WALL_RATIO_LONG || wallSmashLong)
         ) {
             this.lastTradeTs = now;
+            const tag = wallSmashLong ? "🐋穿牆" : "🚀穿牆";
             const reason =
-                `🚀 DEFIANCE穿牆LONG: $${ethPrice.toFixed(2)} | ` +
+                `${tag}LONG: $${ethPrice.toFixed(2)} | ` +
                 `BTC=${btcBuyRatio.toFixed(1)}x≥${dynamicBtcThreshold.toFixed(1)}x | ` +
                 `${marginMode} M=$${margin} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
             log(reason);
@@ -187,15 +188,17 @@ export class CausalStrategy {
 
         // --- SHORT ---
         const breakoutShort = instantVol / Math.max(l1Bid, 0.001);
+        const wallSmashShort = btcSellRatio >= 15;
         if (
             ALLOW_SHORT &&
             btcSellRatio >= dynamicBtcThreshold &&
-            breakoutShort >= BREAKOUT_POWER_MIN &&
-            wallRatio < ENTRY_WALL_RATIO_SHORT
+            (breakoutShort >= BREAKOUT_POWER_MIN || wallSmashShort) &&
+            (wallRatio < ENTRY_WALL_RATIO_SHORT || wallSmashShort)
         ) {
             this.lastTradeTs = now;
+            const tag = wallSmashShort ? "🐋穿牆" : "🚀穿牆";
             const reason =
-                `📉 DEFIANCE穿牆SHORT: $${ethPrice.toFixed(2)} | ` +
+                `${tag}SHORT: $${ethPrice.toFixed(2)} | ` +
                 `BTC=${btcSellRatio.toFixed(1)}x≥${dynamicBtcThreshold.toFixed(1)}x | ` +
                 `${marginMode} M=$${margin} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
             log(reason);
