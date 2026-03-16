@@ -57,10 +57,11 @@ class LeviathanBot {
     async start() {
         log("════════════════════════════════════════════");
         log("  🧬 Dollarprinter V80-DEFIANCE");
-        log("  🎯 n-of-1 ADAPTIVE: $400 → $3,500");
-        log("  📊 ATR灵敏度 + 动态子弹 + 分阶段出场");
+        log("  🏁 V80.3 Dynamic Positioning");
+        log("  🎯 ETH: T1=1.5 T2=3.0 T3=5.0 | MAX=5.0");
         log("  🛡️ SL=4pt | Stage1=+10pt平30% | 15m结构护卫");
-        log("  🔒 熔断器: <$300 自动防御");
+        log("  ⏳ 60s 启动冷却 防重复开仓");
+        log("  🔒 熔断器: <$200→防御(1 ETH)");
         log("════════════════════════════════════════════");
 
         await this.candles.bootstrap();
@@ -88,14 +89,12 @@ class LeviathanBot {
         log("════════════════════════════════════════════");
 
         await notifyTG(
-            `🧬 *V80-DEFIANCE 已启动*\n` +
+            `🏁 *V80.3 已启动*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `🕒 *${tmCfg.mode}* | 防御: ${this.strategy.defenseMode ? "🔴ON" : "🟢OFF"}\n` +
-            `📊 ATR=${this.candles.atr15m.toFixed(1)}pt | 1H均幅=${this.candles.avg1hAmplitude.toFixed(1)}pt\n` +
-            `🎯 动态子弹: $30(SCALP) / $100(SNIPER)\n` +
-            `💰 Stage1: +10pt→平30% | Stage2: 15m结构护卫\n` +
+            `🕒 *${tmCfg.mode}* | 防御: ${this.strategy.defenseMode ? "🔴ON 1ETH" : "🟢OFF"}\n` +
+            `🎯 T1=1.5 T2=3.0 T3=5.0 ETH | MAX=5\n` +
+            `⏳ 60s启动冷却 防重复开仓\n` +
             `🛡️ SL=${SL_POINTS}pt | ZR≥${ZERO_RISK_THRESHOLD}pt\n` +
-            `🔒 熔断器: <$${CIRCUIT_BREAKER_BALANCE}→防御\n` +
             `发 *1* 激活`,
         );
 
@@ -160,14 +159,13 @@ class LeviathanBot {
             const coinName = sig.targetSymbol.replace("USDT", "");
 
             await notifyTG(
-                `🧬 *${sig.side.toUpperCase()} ${coinName}*\n${sig.reason}\n` +
-                `@ ${sig.price.toFixed(prec.price)} | M=$${sig.margin}`,
+                `🏁 *${sig.side.toUpperCase()} ${coinName}*\n${sig.reason}\n` +
+                `@ ${sig.price.toFixed(prec.price)} | ${sig.qty}ETH`,
             );
 
-            const ok = await this.executor.atomicEntry(sig.side, sig.price, sig.margin, sig.targetSymbol, notifyTG);
+            const ok = await this.executor.atomicEntry(sig.side, sig.price, sig.qty, sig.targetSymbol, notifyTG);
             if (ok) {
-                this.executor.originalQty = this.executor.positionQty;
-                log(`✅ 🧬 ${sig.side.toUpperCase()} ${coinName} @ ${sig.price.toFixed(prec.price)} M=$${sig.margin}`);
+                log(`✅ ${sig.side.toUpperCase()} ${sig.qty} ${coinName} @ ${sig.price.toFixed(prec.price)}`);
                 let diagMsg =
                     `📡 *订单诊断*\n` +
                     `⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n` +

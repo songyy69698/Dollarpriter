@@ -141,49 +141,65 @@ export class BitunixExecutor {
         return { "api-key": this.apiKey, sign: signature, nonce, timestamp };
     }
 
-    // ═══ V80.1 方案B LIMIT 入场 (maker 回扣) ═══
+    // ═══ V80.3 启动冷却 ═══
+    private _bootTs = Date.now();
+    private readonly BOOT_COOLDOWN_MS = 60_000; // 60s 启动冷却, 防重复开仓
+
+    isBootCooldown(): boolean {
+        return Date.now() - this._bootTs < this.BOOT_COOLDOWN_MS;
+    }
+
+    // ═══ V80.3 LIMIT 入场 (直接接收 ETH 数量) ═══
     async atomicEntry(
         side: "long" | "short",
         currentPrice: number,
-        margin: number,
+        qty: number,               // V80.3: 直接 ETH 数量 (1.5/3.0/5.0)
         targetSymbol: string = SYMBOL,
         onDepthFail?: (msg: string) => Promise<void>,
     ): Promise<boolean> {
         if (this.inPosition || this._entering) return false;
-        this._entering = true;
 
-        const prec = getPrecision(targetSymbol);
-        const coinName = targetSymbol.replace("USDT", "");
-
-        // Step 1: 查询可用余额
-        const balance = await this.getBalance();
-        log(`💰 [PRE-ORDER] 可用余额: $${balance.toFixed(2)} | 所需保证金: $${margin}`);
-        if (balance < margin * 1.1) {
-            this._entering = false;
-            log(`❌ 余额不足! $${balance.toFixed(2)} < $${(margin * 1.1).toFixed(2)}`);
-            if (onDepthFail) await onDepthFail(`❌ 余额不足: $${balance.toFixed(2)} < M=$${margin}`);
+        // 60s 启动冷却: 新实例前 60 秒禁止开仓
+        if (this.isBootCooldown()) {
+            log(`⏳ 启动冷却中 (${Math.ceil((this.BOOT_COOLDOWN_MS - (Date.now() - this._bootTs)) / 1000)}s), 禁止开仓`);
             return false;
         }
 
-        // Step 2: 设置交易环境 (逊仓 + 杠杆 200x)
-        await this.setupTradeEnv(targetSymbol);
+        this._entering = true;
+        const prec = getPrecision(targetSymbol);
+        const coinName = targetSymbol.replace("USDT", "");
 
-        // 强制 1 位小数 (floor): 1.924 → 1.9 (Bitunix 安全线)
-        const rawQty = (margin * LEVERAGE) / currentPrice;
-        const qty = Math.floor(rawQty * 10) / 10;
+        // 余额检查
+        const balance = await this.getBalance();
+        const requiredMargin = (qty * currentPrice) / LEVERAGE;
+        log(`💰 [PRE-ORDER] 余额: $${balance.toFixed(2)} | 需保证金: $${requiredMargin.toFixed(2)} | ${qty} ${coinName}`);
+
+        if (balance < requiredMargin * 1.2) {
+            this._entering = false;
+            log(`❌ 余额不足! $${balance.toFixed(2)} < $${(requiredMargin * 1.2).toFixed(2)}`);
+            if (onDepthFail) await onDepthFail(`❌ 余额不足: $${balance.toFixed(2)}`);
+            return false;
+        }
+
+        // 强制 1 位小数: 3.0, 1.5, 5.0
+        qty = Math.floor(qty * 10) / 10;
         if (qty <= 0) { this._entering = false; return false; }
 
-        const tag = genOrderTag();
-        log(`🚀 [LIMIT] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)} | M=$${margin}`);
+        // 绝对上限 5 ETH
+        if (qty > 5.0) qty = 5.0;
 
-        // ═══ V80.1 LIMIT 单 (maker fee) ═══
+        await this.setupTradeEnv(targetSymbol);
+
+        const tag = genOrderTag();
+        log(`🏁 [V80.3] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)}`);
+
         const orderData: Record<string, string> = {
             symbol: targetSymbol,
             side: side === "long" ? "BUY" : "SELL",
             tradeSide: "OPEN",
             orderType: "LIMIT",
             price: currentPrice.toFixed(prec.price),
-            qty: qty.toString(),
+            qty: qty.toFixed(1),
             clientId: tag,
         };
 
@@ -194,14 +210,12 @@ export class BitunixExecutor {
         if (!result) {
             this._entering = false;
             const errDetail = this.lastError || "未知错误";
-            const reqBody = JSON.stringify(orderData);
-            log(`❌ LIMIT 开仓失败 [${targetSymbol}]: ${errDetail}`);
+            log(`❌ 开仓失败 [${targetSymbol}]: ${errDetail}`);
             if (onDepthFail) await onDepthFail(
-                `❌ LIMIT 开仓失败 [${coinName}]\n` +
-                `💰 余额: $${balance.toFixed(2)} | M=$${margin}\n` +
-                `🚀 ${side.toUpperCase()} ${qty} @ $${currentPrice.toFixed(prec.price)}\n` +
-                `🚨 错误: ${errDetail}\n` +
-                `📦 REQ: ${reqBody}`
+                `❌ 开仓失败 [${coinName}]\n` +
+                `💰 余额: $${balance.toFixed(2)}\n` +
+                `🏁 ${side.toUpperCase()} ${qty} @ $${currentPrice.toFixed(prec.price)}\n` +
+                `🚨 ${errDetail}`
             );
             return false;
         }
@@ -215,11 +229,9 @@ export class BitunixExecutor {
         const slippage = Math.abs(actualPrice - currentPrice);
         this.lastSlippage = slippage;
         this.signalPrice = currentPrice;
-        const HIGH_SLIPPAGE_PT = 1.5;
-        this.highSlippage = slippage > HIGH_SLIPPAGE_PT;
+        this.highSlippage = slippage > 1.5;
 
-        log(`✅ LIMIT ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} [${targetSymbol}] (${ms.toFixed(0)}ms)`);
-        log(`[DRIFT] Signal: ${currentPrice.toFixed(prec.price)} | Fill: ${actualPrice.toFixed(prec.price)} | Slip: ${slippage.toFixed(prec.price)}pt${this.highSlippage ? " 🚨" : ""}`);
+        log(`✅ ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} (${ms.toFixed(0)}ms) Slip=${slippage.toFixed(prec.price)}pt`);
 
         this.inPosition = true;
         this._entering = false;
@@ -227,11 +239,12 @@ export class BitunixExecutor {
         this.positionSymbol = targetSymbol;
         this.entryPrice = actualPrice;
         this.positionQty = actualQty;
+        this.originalQty = actualQty;
         this.entryTs = Date.now();
         this.orderTag = tag;
         this.zeroRiskTriggered = false;
 
-        // Atomic SL — 固定 10pt 硬止损 (200x 生存极限)
+        // Atomic SL — 4pt STOP_MARKET
         const slPrice = side === "long"
             ? actualPrice - SL_POINTS
             : actualPrice + SL_POINTS;
@@ -243,8 +256,8 @@ export class BitunixExecutor {
         );
         this.lastSlMs = Math.round(performance.now() - slT0);
 
-        if (slOk) log(`🛡️ Atomic SL: ${slPrice.toFixed(prec.price)} (-${SL_POINTS}pt) [${this.lastSlMs}ms]`);
-        else log("⚠️ Atomic SL 挂单失败! 软件层保护");
+        if (slOk) log(`🛡️ SL: ${slPrice.toFixed(prec.price)} (-${SL_POINTS}pt) [${this.lastSlMs}ms]`);
+        else log("⚠️ SL 挂单失败!");
 
         return true;
     }

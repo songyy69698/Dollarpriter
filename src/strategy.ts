@@ -1,7 +1,8 @@
 /**
- * 🧬 V80-DEFIANCE — n-of-1 自适应穿牆狙击
+ * 🏁 V80.3 DYNAMIC POSITIONING — 固定 ETH 仓位
  * ═══════════════════════════════════════════
- * 动态子弹 + ATR 灵敏度 + 时段模式 + 疲劳仪
+ * BTC Lead → 1.5/3.0/5.0 ETH | 绝对上限 5 ETH
+ * ATR 动态门槛 + 时段模式 + 疲劳仪
  */
 
 import type { CausalSnapshot } from "./bitunix-ws";
@@ -22,15 +23,24 @@ function log(msg: string) {
     console.log(`${ts} [strategy] ${msg}`);
 }
 
-/** ATR clamp 工具 */
 function clamp(min: number, val: number, max: number): number {
     return Math.max(min, Math.min(val, max));
+}
+
+// ═══ V80.3 固定仓位规则 ═══
+const ABSOLUTE_MAX_QTY = 5.0;   // ETH 绝对上限
+
+/** 根据 BTC Lead 返回 ETH 数量 */
+function getDynamicQty(btcLead: number): { qty: number; tier: string } {
+    if (btcLead >= 15) return { qty: 5.0, tier: "🐋T3" };
+    if (btcLead >= 10) return { qty: 3.0, tier: "🔥T2" };
+    return { qty: 1.5, tier: "⚡T1" };
 }
 
 export interface CausalSignal {
     side: "long" | "short";
     price: number;
-    margin: number;
+    qty: number;          // V80.3: 直接输出 ETH 数量
     reason: string;
     targetSymbol: string;
 }
@@ -39,16 +49,13 @@ export class CausalStrategy {
     private lastTradeTs = 0;
     private scanCount = 0;
     private _currentMode: TimeMode = "SLEEP";
-    private _defenseMode = false;         // 熔断器
+    private _defenseMode = false;
 
     getScanCount(): number { return this.scanCount; }
     get currentMode(): TimeMode { return this._currentMode; }
     get defenseMode(): boolean { return this._defenseMode; }
     set defenseMode(v: boolean) { this._defenseMode = v; }
 
-    /**
-     * V80-DEFIANCE: 自适应穿牆狙击
-     */
     evaluate(snap: CausalSnapshot, ct: CandleTracker, balance: number): CausalSignal | null {
         this.scanCount++;
         const now = Date.now();
@@ -76,7 +83,7 @@ export class CausalStrategy {
         const l1Ask = snap.ethL1AskVol;
         const l1Bid = snap.ethL1BidVol;
 
-        // CEO: $60子弹需要足够流动性
+        // 流动性门槛: 瞬量 > 50
         if (instantVol < 50) return null;
 
         // ═══ ATR 动态灵敏度 ═══
@@ -93,25 +100,19 @@ export class CausalStrategy {
         const btcSellRatio = btcSell / Math.max(btcBuy, 0.001);
         const btcLead = Math.max(btcBuyRatio, btcSellRatio);
 
-        // ═══ 自适应子弹 (Dynamic Margin) ═══
-        const trendAligned = ct.isTrendAligned();
-        let margin: number;
-        let marginMode: string;
+        // ═══ V80.3 动态仓位 ═══
+        const { qty: rawQty, tier } = getDynamicQty(btcLead);
+        let qty = Math.min(rawQty, ABSOLUTE_MAX_QTY);
 
-        if (this._defenseMode) {
-            margin = 20;
-            marginMode = "🛡️DEFENSE";
-        } else if (btcLead >= 12 && trendAligned) {
-            margin = 120;
-            marginMode = "🐋WHALE";
-        } else {
-            margin = 60;
-            marginMode = "🚀OFFENSE";
+        // 防御模式: 强制 1.0 ETH
+        if (this._defenseMode) qty = 1.0;
+
+        // 余额安全: qty 对应的保证金 < 余额 30%
+        const requiredMargin = (qty * ethPrice) / 200; // 200x
+        if (requiredMargin > balance * 0.3) {
+            qty = Math.floor((balance * 0.3 * 200 / ethPrice) * 10) / 10;
+            if (qty < 0.5) return null; // 余额太低
         }
-
-        // 余额安全检查: margin 不超过余额的 25%
-        if (margin > balance * 0.25) margin = Math.floor(balance * 0.25);
-        if (margin < 10) return null; // 余额太低不开
 
         // ═══ 振幅疲劳仪 ═══
         ct.updateRealtimePrice(ethPrice);
@@ -123,50 +124,41 @@ export class CausalStrategy {
                 const pricePos = ct.getPricePosition(ethPrice);
                 if (pricePos > 0.9 && ALLOW_SHORT) {
                     this.lastTradeTs = now;
-                    const reason =
-                        `🔄 DEFIANCE 极值反转SHORT: $${ethPrice.toFixed(2)} | ` +
-                        `疲劳=${(fatigue * 100).toFixed(0)}% | ${marginMode} M=$${margin}`;
+                    const reason = `🔄 极值SHORT: $${ethPrice.toFixed(2)} | 疲劳=${(fatigue*100).toFixed(0)}% | ${qty}ETH ${tier}`;
                     log(reason);
-                    return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+                    return { side: "short", price: ethPrice, qty, reason, targetSymbol: ETH_SYMBOL };
                 }
                 if (pricePos < 0.1) {
                     this.lastTradeTs = now;
-                    const reason =
-                        `🔄 DEFIANCE 极值反转LONG: $${ethPrice.toFixed(2)} | ` +
-                        `疲劳=${(fatigue * 100).toFixed(0)}% | ${marginMode} M=$${margin}`;
+                    const reason = `🔄 极值LONG: $${ethPrice.toFixed(2)} | 疲劳=${(fatigue*100).toFixed(0)}% | ${qty}ETH ${tier}`;
                     log(reason);
-                    return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+                    return { side: "long", price: ethPrice, qty, reason, targetSymbol: ETH_SYMBOL };
                 }
             }
             return null;
         }
 
-        // ═══ ANTIFAKE: 假突破反转 ═══
+        // ═══ ANTIFAKE ═══
         if (tmConfig.mode === "ANTIFAKE") {
             const prev15mH = ct.prev15mHigh;
             const prev15mL = ct.prev15mLow;
-            const breakoutPower = instantVol / Math.max(l1Ask, 0.001);
-
-            if (ethPrice > prev15mH && breakoutPower < 1.5 && ALLOW_SHORT) {
+            const bp = instantVol / Math.max(l1Ask, 0.001);
+            if (ethPrice > prev15mH && bp < 1.5 && ALLOW_SHORT) {
                 this.lastTradeTs = now;
-                const reason =
-                    `🎭 ANTIFAKE SHORT: $${ethPrice.toFixed(2)} > 15mH 但量弱=${breakoutPower.toFixed(1)}x | ${marginMode} M=$${margin}`;
+                const reason = `🎭 ANTIFAKE SHORT: $${ethPrice.toFixed(2)} | ${qty}ETH ${tier}`;
                 log(reason);
-                return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+                return { side: "short", price: ethPrice, qty, reason, targetSymbol: ETH_SYMBOL };
             }
-            if (ethPrice < prev15mL && breakoutPower < 1.5) {
+            if (ethPrice < prev15mL && bp < 1.5) {
                 this.lastTradeTs = now;
-                const reason =
-                    `🎭 ANTIFAKE LONG: $${ethPrice.toFixed(2)} < 15mL 但量弱=${breakoutPower.toFixed(1)}x | ${marginMode} M=$${margin}`;
+                const reason = `🎭 ANTIFAKE LONG: $${ethPrice.toFixed(2)} | ${qty}ETH ${tier}`;
                 log(reason);
-                return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+                return { side: "long", price: ethPrice, qty, reason, targetSymbol: ETH_SYMBOL };
             }
             return null;
         }
 
         if (!tmConfig.allowBreakout) return null;
-
-        // ═══ 穿牆入场 (Dynamic BTC Threshold) ═══
         if (instantVol <= 0) return null;
         const wallRatio = l1Bid / Math.max(l1Ask, 0.001);
 
@@ -179,13 +171,10 @@ export class CausalStrategy {
             (wallRatio > ENTRY_WALL_RATIO_LONG || wallSmashLong)
         ) {
             this.lastTradeTs = now;
-            const tag = wallSmashLong ? "🐋穿牆" : "🚀穿牆";
-            const reason =
-                `${tag}LONG: $${ethPrice.toFixed(2)} | ` +
-                `BTC=${btcBuyRatio.toFixed(1)}x≥${dynamicBtcThreshold.toFixed(1)}x | ` +
-                `${marginMode} M=$${margin} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
+            const tag = wallSmashLong ? "🐋" : "🚀";
+            const reason = `${tag} LONG: $${ethPrice.toFixed(2)} | BTC=${btcBuyRatio.toFixed(1)}x | ${qty}ETH ${tier} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
             log(reason);
-            return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+            return { side: "long", price: ethPrice, qty, reason, targetSymbol: ETH_SYMBOL };
         }
 
         // --- SHORT ---
@@ -198,13 +187,10 @@ export class CausalStrategy {
             (wallRatio < ENTRY_WALL_RATIO_SHORT || wallSmashShort)
         ) {
             this.lastTradeTs = now;
-            const tag = wallSmashShort ? "🐋穿牆" : "🚀穿牆";
-            const reason =
-                `${tag}SHORT: $${ethPrice.toFixed(2)} | ` +
-                `BTC=${btcSellRatio.toFixed(1)}x≥${dynamicBtcThreshold.toFixed(1)}x | ` +
-                `${marginMode} M=$${margin} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
+            const tag = wallSmashShort ? "🐋" : "🚀";
+            const reason = `${tag} SHORT: $${ethPrice.toFixed(2)} | BTC=${btcSellRatio.toFixed(1)}x | ${qty}ETH ${tier} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
             log(reason);
-            return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+            return { side: "short", price: ethPrice, qty, reason, targetSymbol: ETH_SYMBOL };
         }
 
         return null;
