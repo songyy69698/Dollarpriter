@@ -190,6 +190,7 @@ class LeviathanBot {
                 this.candles.prev15mHigh,
                 this.candles.prev15mLow,
                 this.candles.last1mClose,
+                s.ethEfficiency,
             );
 
             if (r.closed) {

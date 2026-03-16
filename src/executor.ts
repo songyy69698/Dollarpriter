@@ -276,6 +276,7 @@ export class BitunixExecutor {
         prev15mHigh: number,
         prev15mLow: number,
         last1mClose: number,
+        ethEfficiency: number = 999,
     ): Promise<{ closed: boolean; reason: string; netPnlU: number; symbol: string }> {
         if (!this.inPosition) return { closed: false, reason: "", netPnlU: 0, symbol: "" };
 
@@ -315,6 +316,11 @@ export class BitunixExecutor {
             this.currentSlPrice = newSl;
             if (slOk) log(`✅ Zero-Risk SL: ${newSl.toFixed(prec.price)} (entry+${ZERO_RISK_SL_OFFSET}pt)`);
             else log("⚠️ Zero-Risk SL 挂单失败!");
+        }
+
+        // ═══ Layer 3.5: V69 效率衰竭止盈 — 因大果小, 落袋为安 ═══
+        if (!reason && ethEfficiency < 0.15 && pnlPt > 15) {
+            reason = `💰 V69 效率衰竭止盈: 效率=${ethEfficiency.toFixed(3)} + 盈利=${pnlPt.toFixed(prec.price)}pt`;
         }
 
         // ═══ Layer 4: Iron Guard — 15M 结构性止损 ═══
