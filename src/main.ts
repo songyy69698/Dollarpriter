@@ -128,7 +128,7 @@ class LeviathanBot {
                 log("🟢 熔断器解除! 余额恢复");
                 await notifyTG(`🟢 *熔断器解除*\n余额 $${this.currentBalance.toFixed(2)} ≥ $${CIRCUIT_BREAKER_BALANCE + 50}\n恢复正常子弹`);
             }
-        }, 60_000);
+        }, 30_000); // 每30s检测余额
         log("🟢 V80-DEFIANCE 就绪 — 发 1 激活");
     }
 

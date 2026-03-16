@@ -72,10 +72,12 @@ export class CausalStrategy {
         if (snap.ethSpread > MAX_SPREAD_POINTS) return null;
         if (snap.ethTop3Depth < MIN_DEPTH_ETH) return null;
 
-        // ═══ 订单流数据 ═══
         const instantVol = snap.ethInstantVol;
         const l1Ask = snap.ethL1AskVol;
         const l1Bid = snap.ethL1BidVol;
+
+        // CEO: $60子弹需要足够流动性
+        if (instantVol < 50) return null;
 
         // ═══ ATR 动态灵敏度 ═══
         const atr = ct.atr15m;
@@ -99,9 +101,9 @@ export class CausalStrategy {
         if (this._defenseMode) {
             margin = 20;
             marginMode = "🛡️DEFENSE";
-        } else if (btcLead >= 15 && trendAligned) {
-            margin = 100;
-            marginMode = "🐋 WHALE";
+        } else if (btcLead >= 12 && trendAligned) {
+            margin = 120;
+            marginMode = "🐋WHALE";
         } else {
             margin = 60;
             marginMode = "🚀OFFENSE";
