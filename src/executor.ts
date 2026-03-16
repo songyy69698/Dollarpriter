@@ -329,7 +329,7 @@ export class BitunixExecutor {
             else log("⚠️ Zero-Risk SL 挂单失败!");
         }
 
-        // ═══ Layer 4a: V80 吸能止盈 — 放量不动 = 顶部 ═══
+        // ═══ Layer 4: V80 DEFIANCE — 吸能 OR 牆压, 任一触发秒平 ═══
         if (!reason && pnlPt > ABSORPTION_PROFIT_MIN && ethInstantVol > 0 && ethAvgVol > 0) {
             // 瞬时位移效率: |Δprice| / (vol1s / avgVol)
             const volRatio = ethInstantVol / ethAvgVol + 0.0001;
@@ -340,19 +340,10 @@ export class BitunixExecutor {
                 ? ethL1AskVol / Math.max(ethL1BidVol, 0.001)
                 : ethL1BidVol / Math.max(ethL1AskVol, 0.001);
 
-            if (instantEff < ABSORPTION_EFF_MIN && wallPressure > ABSORPTION_WALL_PRESS) {
-                reason = `💰 V80 吸能止盈: 效率=${instantEff.toFixed(3)}<${ABSORPTION_EFF_MIN} 牆压=${wallPressure.toFixed(1)}x +${pnlPt.toFixed(prec.price)}pt`;
-            }
-        }
-
-        // ═══ Layer 4b: V80 牆压止盈 — 前方阻力过大 ═══
-        if (!reason && pnlPt > WALL_PRESSURE_PROFIT_MIN) {
-            const wallPressure = this.positionSide === "long"
-                ? ethL1AskVol / Math.max(ethL1BidVol, 0.001)
-                : ethL1BidVol / Math.max(ethL1AskVol, 0.001);
-
-            if (wallPressure > WALL_PRESSURE_EXIT) {
-                reason = `🛡️ V80 牆壓止盈: 牆压=${wallPressure.toFixed(1)}x>${WALL_PRESSURE_EXIT}x +${pnlPt.toFixed(prec.price)}pt — 前方阻力過大`;
+            // OR 逻辑: 吸能 或 牆压, 任一即平
+            if (instantEff < ABSORPTION_EFF_MIN || wallPressure > WALL_PRESSURE_EXIT) {
+                const triggerType = instantEff < ABSORPTION_EFF_MIN ? "吸能" : "牆阻";
+                reason = `💰 V80 察覺${triggerType}: 效率=${instantEff.toFixed(3)} 牆压=${wallPressure.toFixed(1)}x +${pnlPt.toFixed(prec.price)}pt — 最高點物理收割`;
             }
         }
 

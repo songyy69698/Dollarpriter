@@ -33,7 +33,7 @@ export const TAKER_FEE = 0.0004;
 // ═══════════════════════════════════════
 // V80 入场：穿牆狙击
 // ═══════════════════════════════════════
-export const BTC_ENTRY_RATIO = 8.0;            // 海嘯級: BTC 领路 ≥ 8x
+export const BTC_ENTRY_RATIO = 10.0;           // 絕對失衡: BTC 領路 ≥ 10x
 export const BREAKOUT_POWER_MIN = 3.0;         // 能量击穿 L1 牆 ≥ 3x
 export const ENTRY_WALL_RATIO_LONG = 2.0;      // LONG: bid/ask 牆比 > 2.0 (支撑强)
 export const ENTRY_WALL_RATIO_SHORT = 0.5;     // SHORT: bid/ask 牆比 < 0.5 (压制强)
@@ -43,9 +43,9 @@ export const ENTRY_WALL_RATIO_SHORT = 0.5;     // SHORT: bid/ask 牆比 < 0.5 (�
 // ═══════════════════════════════════════
 export const ABSORPTION_EFF_MIN = 0.15;        // 吸能止盈: 位移效率 < 0.15 (放量不动)
 export const ABSORPTION_WALL_PRESS = 2.0;      // 吸能止盈: 同时须反向牆压 > 2x
-export const ABSORPTION_PROFIT_MIN = 5;        // 吸能止盈: 最低盈利 5pt
+export const ABSORPTION_PROFIT_MIN = 6;        // 吸能止盈: 最低盈利 6pt
 export const WALL_PRESSURE_EXIT = 3.0;         // 牆压止盈: 前方牆/后方牆 > 3x
-export const WALL_PRESSURE_PROFIT_MIN = 8;     // 牆压止盈: 最低盈利 8pt
+export const WALL_PRESSURE_PROFIT_MIN = 6;     // 牆压止盈: 最低盈利 6pt (与吸能同步)
 
 // ═══════════════════════════════════════
 // Zero-Risk Gate
