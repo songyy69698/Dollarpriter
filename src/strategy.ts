@@ -38,7 +38,7 @@ export class CausalStrategy {
     getScanCount(): number { return this.scanCount; }
 
     /**
-     * V66: 15M 结构性突破评估
+     * V69: 15M 结构性突破评估
      * @param snap  WS 数据快照
      * @param ct    K线追踪器
      * @param balance 当前余额 (用于复利)

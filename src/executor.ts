@@ -1,9 +1,9 @@
 /**
- * ⚡ Bitunix 执行器 — V66 "LEVIATHAN"
+ * ⚡ Bitunix 执行器 — V69 "NO-EXCUSE"
  * ═══════════════════════════════════════════
  * MARKET 入场 (IOC) + Iron Guard 出场
- * 硬止损 8pt → Zero-Risk Gate → 15M 结构性止损
- * 无固定止盈 / 无固定超时
+ * 硬止损 10pt → Zero-Risk Gate 8pt → 15M 结构性止损
+ * 效率衰竭止盈 + 无固定超时
  */
 
 import {
@@ -44,7 +44,7 @@ export class BitunixExecutor {
 
     tradeLog: any[] = [];
 
-    // V66 Iron Guard 状态
+    // V69 Iron Guard 状态
     zeroRiskTriggered = false;     // Zero-Risk Gate 是否已触发
     structGuardPrice = 0;          // 当前结构止损线
 
@@ -226,7 +226,7 @@ export class BitunixExecutor {
         this.orderTag = tag;
         this.zeroRiskTriggered = false;
 
-        // Atomic SL — 固定 8pt 硬止损
+        // Atomic SL — 固定 10pt 硬止损 (200x 生存极限)
         const slPrice = side === "long"
             ? actualPrice - SL_POINTS
             : actualPrice + SL_POINTS;
@@ -269,7 +269,7 @@ export class BitunixExecutor {
     }
 
     // ═══════════════════════════════════════════════
-    // V66 Iron Guard — 出场逻辑
+    // V69 Iron Guard — 出场逻辑
     // ═══════════════════════════════════════════════
     async checkPosition(
         currentPrice: number,
@@ -290,7 +290,7 @@ export class BitunixExecutor {
         const elapsed = Date.now() - this.entryTs;
         let reason = "";
 
-        // ═══ Layer 1: 硬止损 — 永远有效, 8pt ═══
+        // ═══ Layer 1: 硬止损 — 永远有效, 10pt ═══
         if (pnlPt <= -SL_POINTS) {
             reason = `📉 硬止损: ${pnlPt.toFixed(prec.price)}pt (SL=${SL_POINTS}pt)`;
         }

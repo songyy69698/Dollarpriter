@@ -1,7 +1,7 @@
 /**
  * ⚙️ V69 "NO-EXCUSE" — 200x 绝地狙击配置
  * ═══════════════════════════════════════
- * $31 残局绝地反击 + 绝对因果 + 光速保本
+ * $48 残局回血 + 绝对因果 + 光速保本
  */
 
 // ═══════════════════════════════════════
@@ -22,7 +22,7 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 };
 
 // ═══════════════════════════════════════
-// 核心参数 — V66 LEVIATHAN
+// 核心参数 — V69 NO-EXCUSE
 // ═══════════════════════════════════════
 export const LEVERAGE = 200;
 export const ALLOW_SHORT = true;
@@ -37,6 +37,7 @@ export const WALL_RATIO_MIN = 4.5;             // V69: 買賣牆比 ≥ 4.5x 才
 export const EFFICIENCY_MIN = 1.2;             // V69: 效率 ≥ 1.2 才进场
 export const CANDLE_LOOKBACK = 4;              // V-FINAL: 看最近 4 根 15M K线 (更严格入场)
 export const CANDLE_POLL_MS = 30_000;          // K线轮询间隔 30s
+
 
 // ═══════════════════════════════════════
 // Iron Guard — 结构性出场
@@ -58,7 +59,7 @@ export const MIN_DEPTH_ETH = 50;
 // ═══════════════════════════════════════
 // 复利保证金阶梯
 // ═══════════════════════════════════════
-export const MARGIN_DEFAULT = 15;              // V69: $15 (剩$31分成2颗子弹)
+export const MARGIN_DEFAULT = 15;              // V69: $15 (剩$48分成3颗子弹)
 export const MARGIN_TIERS: { minBalance: number; margin: number }[] = [
     { minBalance: 2000, margin: 400 },
     { minBalance: 1000, margin: 150 },
@@ -76,7 +77,7 @@ export function getMargin(balance: number): number {
 // ═══════════════════════════════════════
 // 冷却 & 安全
 // ═══════════════════════════════════════
-export const COOLDOWN_MS = 30_000;             // V66: 冷却 30s (15M策略不需太短)
+export const COOLDOWN_MS = 30_000;             // V69: 冷却 30s (15M策略不需太短)
 export const WS_LAG_MAX_MS = 500;
 export const MAX_DAILY_TRADES = 10;
 export const MAX_DAILY_LOSS = 100;
@@ -91,4 +92,4 @@ export const AVG_VOL_WINDOW = 200;
 // 时段限制 (UTC+8)
 // ═══════════════════════════════════════
 export const TRADE_HOUR_START = 0;
-export const TRADE_HOUR_END = 23;              // V66: 24h 趋势交易
+export const TRADE_HOUR_END = 23;              // V69: 24h 趋势交易

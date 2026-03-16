@@ -1,7 +1,7 @@
 {
     "name": "dollarprinter",
-    "version": "66.0.0",
-    "description": "V66 LEVIATHAN — 15M Structural Trend + Iron Guard + Zero-Risk Gate + Compounding (Bun/TypeScript)",
+    "version": "69.0.0",
+    "description": "V69 NO-EXCUSE — 5.5x Energy + 4.5x Wall Guard + 8pt Zero-Risk + Iron Guard (Bun/TypeScript)",
     "scripts": {
         "dev": "bun run src/main.ts",
         "start": "bun run src/main.ts"

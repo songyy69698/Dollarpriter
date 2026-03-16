@@ -1,8 +1,8 @@
 /**
- * 🐋 Dollarprinter V66 — LEVIATHAN
+ * 🐋 Dollarprinter V69 — NO-EXCUSE
  * ═══════════════════════════════════════
- * 15M 结构性趋势交易 + Iron Guard 出场
- * MARKET IOC + Zero-Risk Gate + 复利保证金
+ * $48 残局回血 | 5.5x 能量爆发 + 4.5x 牆体护卫
+ * 8pt 秒级保本 + Iron Guard + 效率衰竭止盈
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -32,7 +32,7 @@ class LeviathanBot {
     private executor: BitunixExecutor;
     private candles: CandleTracker;
 
-    private paused = false;    // V66: 默认激活, 不需发1
+    private paused = false;    // V69: 默认激活, 不需发1
     private startTime = Date.now();
     private dailyTrades = 0;
     private dailyPnl = 0;
@@ -55,8 +55,8 @@ class LeviathanBot {
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🐋 Dollarprinter V66 — LEVIATHAN");
-        log("  🔥 15M 结构性趋势交易 + Iron Guard");
+        log("  🐋 Dollarprinter V69 — NO-EXCUSE");
+        log("  🔥 $48 残局回血 | 5.5x + 4.5x + 8pt保本");
         log("  📡 三币种: SOL + BTC + ETH");
         log("════════════════════════════════════════════");
 
@@ -116,7 +116,7 @@ class LeviathanBot {
         setInterval(async () => {
             this.currentBalance = await this.executor.getBalance();
         }, 60_000);
-        log("🟢 V66 就绪 — 自动扫描中");
+        log("🟢 V69 就绪 — 自动扫描中");
     }
 
     private async waitForWS() {
@@ -229,11 +229,11 @@ class LeviathanBot {
                 },
                 "0": async () => {
                     this.paused = true;
-                    await notifyTG("🔴 *V66 暂停*");
+                    await notifyTG("🔴 *V69 暂停*");
                 },
                 "/stop": async () => {
                     this.paused = true;
-                    await notifyTG("🔴 *V66 暂停*");
+                    await notifyTG("🔴 *V69 暂停*");
                 },
                 s: async () => { await this.sendStatus(); },
                 "/status": async () => { await this.sendStatus(); },
@@ -289,7 +289,7 @@ class LeviathanBot {
         const s = this.ws.getSnapshot();
         const cs = this.candles.getSnapshot();
 
-        let m = `📡 *【V66 诊断报告】*\n`;
+        let m = `📡 *【V69 诊断报告】*\n`;
         m += `──────────────\n`;
         m += `📊 *15M K线:* ${cs.count15m}根 | 1M: ${cs.count1m}根\n`;
         m += `   H2=${cs.highest2_15m.toFixed(2)} | L2=${cs.lowest2_15m.toFixed(2)}\n`;
