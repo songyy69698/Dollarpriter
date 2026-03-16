@@ -62,7 +62,7 @@ export const MIN_DEPTH_ETH = 50;
 // ═══════════════════════════════════════
 // 保证金 — V80 精确子弹
 // ═══════════════════════════════════════
-export const MARGIN_DEFAULT = 10;              // V80: $10 ($70分7颗子弹)
+export const MARGIN_DEFAULT = 20;              // V80.1: $20 ($400本金)
 export const MARGIN_TIERS: { minBalance: number; margin: number }[] = [
     { minBalance: 2000, margin: 400 },
     { minBalance: 1000, margin: 150 },
