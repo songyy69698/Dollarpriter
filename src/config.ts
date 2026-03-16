@@ -1,15 +1,16 @@
 /**
- * ⚙️ V75 "能量 vs 阻力" — 200x 绝地狙击配置
+ * ⚙️ V80 "FINAL-SENSE" — 200x 物理规则风控
  * ═══════════════════════════════════════
- * 牆体坍塌入场 + 能量吸收止盈 + 撤单防御平仓
+ * 穿牆狙击入场 + 吸能止盈 + 牆压止盈
+ * 4pt 锁死止损 + 6pt 保本 + 120s 冷却
  */
 
 // ═══════════════════════════════════════
 // 交易对 & API — 三币种监控
 // ═══════════════════════════════════════
-export const SYMBOL = "SOLUSDT";               // 默认主交易对
-export const ETH_SYMBOL = "ETHUSDT";           // ETH 主力交易对
-export const BTC_SYMBOL = "BTCUSDT";           // BTC 联动监控
+export const SYMBOL = "SOLUSDT";
+export const ETH_SYMBOL = "ETHUSDT";
+export const BTC_SYMBOL = "BTCUSDT";
 export const BITUNIX_BASE = "https://fapi.bitunix.com";
 export const BITUNIX_WS_PUBLIC = "wss://fapi.bitunix.com/public/";
 
@@ -22,43 +23,35 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 };
 
 // ═══════════════════════════════════════
-// 核心参数 — V75 能量 vs 阻力
+// V80 核心参数
 // ═══════════════════════════════════════
 export const LEVERAGE = 200;
 export const ALLOW_SHORT = true;
-export const SL_POINTS = 4.0;                  // V75: 4pt 硬止损 (200x强平≈5.3pt, SL必须在强平前)
+export const SL_POINTS = 4.0;                  // 🛡️ 4pt 锁死 (强平≈5.3pt, SL 必须先跑)
 export const TAKER_FEE = 0.0004;
 
 // ═══════════════════════════════════════
-// 15M 结构性入场
+// V80 入场：穿牆狙击
 // ═══════════════════════════════════════
-export const BTC_ENTRY_RATIO = 5.5;            // V69: 5.5x 只抓大户清场的「真因」
-export const WALL_RATIO_MIN = 4.5;             // V69: 買賣牆比 ≥ 4.5x 才准进场
-export const EFFICIENCY_MIN = 1.2;             // V69: 效率 ≥ 1.2 才进场
-export const CANDLE_LOOKBACK = 4;              // V-FINAL: 看最近 4 根 15M K线 (更严格入场)
-export const CANDLE_POLL_MS = 30_000;
+export const BTC_ENTRY_RATIO = 8.0;            // 海嘯級: BTC 领路 ≥ 8x
+export const BREAKOUT_POWER_MIN = 3.0;         // 能量击穿 L1 牆 ≥ 3x
+export const ENTRY_WALL_RATIO_LONG = 2.0;      // LONG: bid/ask 牆比 > 2.0 (支撑强)
+export const ENTRY_WALL_RATIO_SHORT = 0.5;     // SHORT: bid/ask 牆比 < 0.5 (压制强)
 
 // ═══════════════════════════════════════
-// V75 能量 vs 阻力参数
+// V80 出场：吸能 + 牆压
 // ═══════════════════════════════════════
-export const BREAKOUT_POWER_MIN = 10.0;    // 入场：能量/L1牆 ≥ 10x (牆体坍塌) [V75修正: 3x太低]
-export const ABSORPTION_RATIO_MIN = 3.0;   // 止盈：牆/能量 ≥ 3x (能量吸收)
-export const ABSORPTION_PRICE_TOL = 0.02;  // 止盈：价格静止容差
-export const BID_WALL_DROP_THRESH = -0.6;  // 防御：牆-60%触发撤单防御
-export const INSTANT_VOL_WINDOW_MS = 2000; // 瞬时量窗口 2s
-export const WALL_HISTORY_WINDOW_MS = 5000;// 牆体变化追踪 5s
-export const V75_EXIT_PROFIT_MIN = 8;      // V75 出场最低盈利门槛 8pt
-
-// ═══════════════════════════════════════
-// Iron Guard — 结构性出场
-// ═══════════════════════════════════════
-export const STRUCT_SL_BUFFER = 0;             // V-FINAL: 无缓冲 (精确 prev 15M High/Low)
+export const ABSORPTION_EFF_MIN = 0.15;        // 吸能止盈: 位移效率 < 0.15 (放量不动)
+export const ABSORPTION_WALL_PRESS = 2.0;      // 吸能止盈: 同时须反向牆压 > 2x
+export const ABSORPTION_PROFIT_MIN = 5;        // 吸能止盈: 最低盈利 5pt
+export const WALL_PRESSURE_EXIT = 3.0;         // 牆压止盈: 前方牆/后方牆 > 3x
+export const WALL_PRESSURE_PROFIT_MIN = 8;     // 牆压止盈: 最低盈利 8pt
 
 // ═══════════════════════════════════════
 // Zero-Risk Gate
 // ═══════════════════════════════════════
-export const ZERO_RISK_THRESHOLD = 8.0;        // V69: 8pt 光速保本
-export const ZERO_RISK_SL_OFFSET = 1.0;        // 保本SL偏移 (entry+1pt)
+export const ZERO_RISK_THRESHOLD = 6.0;        // V80: 6pt 保本 (覆盖单边手续费)
+export const ZERO_RISK_SL_OFFSET = 1.0;
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate
@@ -67,16 +60,15 @@ export const MAX_SPREAD_POINTS = 0.35;
 export const MIN_DEPTH_ETH = 50;
 
 // ═══════════════════════════════════════
-// 复利保证金阶梯
+// 保证金 — V80 精确子弹
 // ═══════════════════════════════════════
-export const MARGIN_DEFAULT = 15;              // V69: $15 (剩$48分成3颗子弹)
+export const MARGIN_DEFAULT = 10;              // V80: $10 ($70分7颗子弹)
 export const MARGIN_TIERS: { minBalance: number; margin: number }[] = [
     { minBalance: 2000, margin: 400 },
     { minBalance: 1000, margin: 150 },
     { minBalance: 500,  margin: 60 },
 ];
 
-/** 根据余额自动计算保证金 */
 export function getMargin(balance: number): number {
     for (const tier of MARGIN_TIERS) {
         if (balance >= tier.minBalance) return tier.margin;
@@ -87,15 +79,17 @@ export function getMargin(balance: number): number {
 // ═══════════════════════════════════════
 // 冷却 & 安全
 // ═══════════════════════════════════════
-export const COOLDOWN_MS = 120_000;            // V75修正: 冷却 120s (防连续亏损)
-export const MIN_HOLD_MS = 30_000;             // V75修正: 最少持仓 30s (防2秒刷费)
+export const COOLDOWN_MS = 120_000;            // 120s 冷却
+export const MIN_HOLD_MS = 30_000;             // 最少持仓 30s
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 10;
-export const MAX_DAILY_LOSS = 100;
+export const MAX_DAILY_TRADES = 1;             // 🔒 V80 受控: 今晚只准开 1 单
+export const MAX_DAILY_LOSS = 20;              // V80: 日亏损上限 $20
 
 // ═══════════════════════════════════════
-// 效率追踪 (保留用于WS引擎)
+// K线 & WS 引擎参数
 // ═══════════════════════════════════════
+export const CANDLE_LOOKBACK = 4;
+export const CANDLE_POLL_MS = 30_000;
 export const EFFICIENCY_WINDOW = 100;
 export const AVG_VOL_WINDOW = 200;
 
@@ -103,4 +97,11 @@ export const AVG_VOL_WINDOW = 200;
 // 时段限制 (UTC+8)
 // ═══════════════════════════════════════
 export const TRADE_HOUR_START = 0;
-export const TRADE_HOUR_END = 23;              // V69: 24h 趋势交易
+export const TRADE_HOUR_END = 23;
+
+// ═══════════════════════════════════════
+// 旧参数 (保留兼容, V80 不使用)
+// ═══════════════════════════════════════
+export const STRUCT_SL_BUFFER = 0;
+export const WALL_RATIO_MIN = 4.5;
+export const EFFICIENCY_MIN = 1.2;

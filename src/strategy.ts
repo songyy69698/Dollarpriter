@@ -1,7 +1,7 @@
 /**
- * 🧠 V75 "能量 vs 阻力" — 牆体坍塌策略引擎
+ * 🧠 V80 "FINAL-SENSE" — 穿牆狙击策略引擎
  * ═══════════════════════════════════════════════
- * 入场：BTC领路(5.5x) + 能量击穿L1首档牆(3x)
+ * 入场：BTC 海嘯(8x) + 能量穿牆(3x) + 牆比确认
  * 纯订单流因果，不依赖K线结构
  */
 
@@ -12,6 +12,7 @@ import {
     ALLOW_SHORT, BTC_ENTRY_RATIO,
     ETH_SYMBOL, MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
     BREAKOUT_POWER_MIN,
+    ENTRY_WALL_RATIO_LONG, ENTRY_WALL_RATIO_SHORT,
     getMargin,
 } from "./config";
 
@@ -35,10 +36,7 @@ export class CausalStrategy {
     getScanCount(): number { return this.scanCount; }
 
     /**
-     * V75: 能量 vs 阻力 — 牆体坍塌评估
-     * @param snap  WS 数据快照
-     * @param ct    K线追踪器 (保留用于 Iron Guard 出场)
-     * @param balance 当前余额 (用于复利)
+     * V80: 穿牆狙击评估
      */
     evaluate(snap: CausalSnapshot, ct: CandleTracker, balance: number): CausalSignal | null {
         this.scanCount++;
@@ -62,70 +60,59 @@ export class CausalStrategy {
         // ═══ BTC Lead 强度 ═══
         const btcBuy = snap.btcBuyDelta;
         const btcSell = snap.btcSellDelta;
-        const btcTotal = btcBuy + btcSell;
-        if (btcTotal <= 0) return null;
+        if (btcBuy + btcSell <= 0) return null;
 
         const btcBuyRatio = btcBuy / Math.max(btcSell, 0.001);
         const btcSellRatio = btcSell / Math.max(btcBuy, 0.001);
 
-        // ═══ V75 瞬时成交量 & L1 牆量 ═══
+        // ═══ V80 数据 ═══
         const instantVol = snap.ethInstantVol;
         const l1Ask = snap.ethL1AskVol;
         const l1Bid = snap.ethL1BidVol;
-
-        // 瞬时成交量必须 > 0 才有意义
         if (instantVol <= 0) return null;
 
-        // ═══ 动态保证金 ═══
+        // 牆比: bid/ask (> 1 = 买盘支撑强)
+        const wallRatio = l1Bid / Math.max(l1Ask, 0.001);
+
         const margin = getMargin(balance);
 
         // ═══════════════════════════════════════════════
-        // V75 入场判定: 牆体坍塌
+        // V80 入场：穿牆狙击
         // ═══════════════════════════════════════════════
 
-        // --- LONG: BTC 买压领路 + 能量击穿首档卖牆 ---
+        // --- LONG: BTC 买压海嘯 + 能量穿卖牆 + 买牆支撑 ---
         const breakoutLong = instantVol / Math.max(l1Ask, 0.001);
         if (
             btcBuyRatio >= BTC_ENTRY_RATIO &&
-            breakoutLong >= BREAKOUT_POWER_MIN
+            breakoutLong >= BREAKOUT_POWER_MIN &&
+            wallRatio > ENTRY_WALL_RATIO_LONG
         ) {
             this.lastTradeTs = now;
             const reason =
-                `🔨 V75 牆塌LONG: $${ethPrice.toFixed(2)} | ` +
-                `突破力=${breakoutLong.toFixed(1)}x≥${BREAKOUT_POWER_MIN}x | ` +
-                `BTC買壓=${btcBuyRatio.toFixed(1)}x | ` +
-                `瞬量=${instantVol.toFixed(1)} vs L1賣牆=${l1Ask.toFixed(1)}`;
+                `🚀 V80 穿牆LONG: $${ethPrice.toFixed(2)} | ` +
+                `突破=${breakoutLong.toFixed(1)}x≥${BREAKOUT_POWER_MIN}x | ` +
+                `BTC=${btcBuyRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
+                `牆比=${wallRatio.toFixed(1)}>${ENTRY_WALL_RATIO_LONG}`;
             log(reason);
-            return {
-                side: "long",
-                price: ethPrice,
-                margin,
-                reason,
-                targetSymbol: ETH_SYMBOL,
-            };
+            return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
         }
 
-        // --- SHORT: BTC 卖压领路 + 能量击穿首档买牆 ---
+        // --- SHORT: BTC 卖压海嘯 + 能量穿买牆 + 卖牆压制 ---
         const breakoutShort = instantVol / Math.max(l1Bid, 0.001);
         if (
             ALLOW_SHORT &&
             btcSellRatio >= BTC_ENTRY_RATIO &&
-            breakoutShort >= BREAKOUT_POWER_MIN
+            breakoutShort >= BREAKOUT_POWER_MIN &&
+            wallRatio < ENTRY_WALL_RATIO_SHORT
         ) {
             this.lastTradeTs = now;
             const reason =
-                `🔨 V75 牆塌SHORT: $${ethPrice.toFixed(2)} | ` +
-                `突破力=${breakoutShort.toFixed(1)}x≥${BREAKOUT_POWER_MIN}x | ` +
-                `BTC賣壓=${btcSellRatio.toFixed(1)}x | ` +
-                `瞬量=${instantVol.toFixed(1)} vs L1買牆=${l1Bid.toFixed(1)}`;
+                `📉 V80 穿牆SHORT: $${ethPrice.toFixed(2)} | ` +
+                `突破=${breakoutShort.toFixed(1)}x≥${BREAKOUT_POWER_MIN}x | ` +
+                `BTC=${btcSellRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
+                `牆比=${wallRatio.toFixed(2)}<${ENTRY_WALL_RATIO_SHORT}`;
             log(reason);
-            return {
-                side: "short",
-                price: ethPrice,
-                margin,
-                reason,
-                targetSymbol: ETH_SYMBOL,
-            };
+            return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
         }
 
         return null;

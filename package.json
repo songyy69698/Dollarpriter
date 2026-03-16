@@ -1,7 +1,7 @@
 {
     "name": "dollarprinter",
-    "version": "75.0.0",
-    "description": "V75 Energy vs Resistance — Wall Collapse Entry + Absorption TP + Withdrawal Defense (Bun/TypeScript)",
+    "version": "80.0.0",
+    "description": "V80 FINAL-SENSE — Wall Breach Entry + Absorption TP + Wall Pressure TP (Bun/TypeScript)",
     "scripts": {
         "dev": "bun run src/main.ts",
         "start": "bun run src/main.ts"

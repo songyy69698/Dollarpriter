@@ -71,6 +71,7 @@ export interface CausalSnapshot {
     ethInstantVol: number;       // ETH 2s 瞬时成交量
     ethBidWallChange: number;    // ETH 买盘牆变化率 (-0.6 = 下降60%)
     ethLastPrice: number;        // ETH 上一笔成交价 (吸收检测用)
+    ethAvgVol: number;           // V80: ETH 平均成交量 (吸能归一化)
 
     // ── 延迟诊断 ──
     wsLatencyMs: number;
@@ -429,6 +430,7 @@ export class BitunixWSEngine {
             ethInstantVol: this.eth.getInstantVol(2000),
             ethBidWallChange: this.eth.getBidWallChange(),
             ethLastPrice: this.eth.lastPrice,
+            ethAvgVol: this.eth.getAvgVol(),
 
             // 延迟诊断
             wsLatencyMs: this._wsLatency,
