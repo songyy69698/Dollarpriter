@@ -1,5 +1,5 @@
 /**
- * 🧬 Dollarprinter V80-DEFIANCE — n-of-1 ADAPTIVE
+ * 🧬 Dollarprinter V80-DYNAMIC-STRIKE — n-of-1 ADAPTIVE
  * ═══════════════════════════════════════
  * 自适应子弹 + ATR 动态灵敏度 + 分阶段出场 + 熔断器
  * $400 → $3,500
@@ -56,8 +56,7 @@ class LeviathanBot {
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🧬 Dollarprinter V80-DEFIANCE");
-        log("  🏁 V80.3 Dynamic Positioning");
+        log("  🏁 V80.3 DYNAMIC-STRIKE");
         log("  🎯 ETH: T1=1.5 T2=3.0 T3=5.0 | MAX=5.0");
         log("  🛡️ SL=4pt | Stage1=+10pt平30% | 15m结构护卫");
         log("  ⏳ 60s 启动冷却 防重复开仓");
@@ -128,7 +127,7 @@ class LeviathanBot {
                 await notifyTG(`🟢 *熔断器解除*\n余额 $${this.currentBalance.toFixed(2)} ≥ $${CIRCUIT_BREAKER_BALANCE + 50}\n恢复正常子弹`);
             }
         }, 30_000); // 每30s检测余额
-        log("🟢 V80-DEFIANCE 就绪 — 发 1 激活");
+        log("🟢 V80-DYNAMIC-STRIKE 就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -224,10 +223,10 @@ class LeviathanBot {
         let lastId = 0;
         setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *DEFIANCE 激活* [${this.strategy.currentMode}] ${this.strategy.defenseMode ? "🛡️防御" : "🧬进攻"}`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *DEFIANCE 激活* [${this.strategy.currentMode}]`); },
-                "0": async () => { this.paused = true; await notifyTG("🔴 *DEFIANCE 暂停*"); },
-                "/stop": async () => { this.paused = true; await notifyTG("🔴 *DEFIANCE 暂停*"); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *DYNAMIC-STRIKE 激活* [${this.strategy.currentMode}] ${this.strategy.defenseMode ? "🛡️防御" : "🧬进攻"}`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *DYNAMIC-STRIKE 激活* [${this.strategy.currentMode}]`); },
+                "0": async () => { this.paused = true; await notifyTG("🔴 *DYNAMIC-STRIKE 暂停*"); },
+                "/stop": async () => { this.paused = true; await notifyTG("🔴 *DYNAMIC-STRIKE 暂停*"); },
                 s: async () => { await this.sendStatus(); },
                 "/status": async () => { await this.sendStatus(); },
                 d: async () => { await this.sendDiagnostics(); },
@@ -252,8 +251,8 @@ class LeviathanBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                h: async () => { await notifyTG(`📖 *DEFIANCE*\n1 激活\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`); },
-                "/help": async () => { await notifyTG(`📖 *DEFIANCE*\n1 激活\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`); },
+                h: async () => { await notifyTG(`📖 *DYNAMIC-STRIKE*\n1 激活\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`); },
+                "/help": async () => { await notifyTG(`📖 *DYNAMIC-STRIKE*\n1 激活\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`); },
             });
         }, 2000);
     }
@@ -267,7 +266,7 @@ class LeviathanBot {
         const cSnap = this.candles.getSnapshot();
         const atr = this.candles.atr15m;
 
-        let m = `📡 *【DEFIANCE 诊断】*\n──────────────\n`;
+        let m = `📡 *【DYNAMIC-STRIKE 诊断】*\n──────────────\n`;
         m += `🧬 防御: ${this.strategy.defenseMode ? "🔴ON $20" : "🟢OFF 动态"}\n`;
         m += `🕒 *${tmCfg.mode}* | ATR=${atr.toFixed(1)}pt\n`;
         m += `📊 疲劳: ${(fatigue * 100).toFixed(0)}%`;
@@ -300,7 +299,7 @@ class LeviathanBot {
         const tmCfg = getTimeMode(utc8h, dt.getUTCMinutes());
         const fatigue = this.candles.getFatigue();
 
-        let m = `🧬 *DEFIANCE*\n──────────────\n`;
+        let m = `🧬 *DYNAMIC-STRIKE*\n──────────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.strategy.defenseMode ? "🛡️防御" : "🧬进攻"}\n`;
         m += `${s.connected ? "🟢" : "🔴"} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${uptimeH}h${uptimeM}m\n`;
         m += `──────────────\n`;
@@ -332,7 +331,7 @@ class LeviathanBot {
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const fatigue = this.candles.getFatigue();
 
-        let m = `💓 *DEFIANCE* ${uptimeH}h | ${this.paused ? "🔴" : "🟢"} | [${this.strategy.currentMode}]\n`;
+        let m = `💓 *DYNAMIC-STRIKE* ${uptimeH}h | ${this.paused ? "🔴" : "🟢"} | [${this.strategy.currentMode}]\n`;
         m += `ETH $${s.ethPrice.toFixed(2)} | ATR=${this.candles.atr15m.toFixed(1)}pt\n`;
         m += `疲劳:${(fatigue * 100).toFixed(0)}% | 趋势:${this.candles.isTrendAligned() ? "✅" : "❌"}\n`;
         m += `余$${b.toFixed(2)} | ${this.strategy.defenseMode ? "🛡️防御" : "🧬进攻"}\n`;
