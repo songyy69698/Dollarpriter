@@ -19,6 +19,8 @@ function log(msg: string) {
     console.log(`${ts} [executor] ${msg}`);
 }
 
+const FEE_SHIELD_PT = 6.0;  // FEE_SHIELD: PnL < 6pt 禁止吸能/牆压出场
+
 function genOrderTag(): string {
     return `D66_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -346,8 +348,9 @@ export class BitunixExecutor {
             else log("⚠️ Zero-Risk SL 挂单失败!");
         }
 
-        // ═══ Layer 4: n-of-1 Stage 1 — +10pt 平 30%, SL→Entry+1 ═══
-        if (!reason && !this.stage1Closed && pnlPt >= ABSORPTION_PROFIT_MIN) {
+        // ═══ Layer 4: Stage 1 — +6pt 平 30%, SL→Entry+1 ═══
+        // FEE_SHIELD: pnlPt >= 6 才允许
+        if (!reason && !this.stage1Closed && pnlPt >= FEE_SHIELD_PT) {
             const closeQty30 = Math.floor(this.positionQty * 0.3 * 10) / 10;
             if (closeQty30 > 0) {
                 log(`💰 Stage1: +${pnlPt.toFixed(prec.price)}pt ≥ ${ABSORPTION_PROFIT_MIN}pt → 平 30% = ${closeQty30}`);
@@ -391,7 +394,8 @@ export class BitunixExecutor {
         }
 
         // ═══ Layer 6: CEO 因果法则 — 疲劳>90% + 吸能 = 小段结束 ═══
-        if (!reason && fatigue > 0.9 && pnlPt > 0 && ethInstantVol > 0 && ethAvgVol > 0) {
+        // FEE_SHIELD: pnlPt >= 6 才允许
+        if (!reason && fatigue > 0.9 && pnlPt >= FEE_SHIELD_PT && ethInstantVol > 0 && ethAvgVol > 0) {
             const volRatio = ethInstantVol / ethAvgVol + 0.0001;
             const instantEff = Math.abs(currentPrice - ethLastPrice) / volRatio;
             if (instantEff < ABSORPTION_EFF_MIN) {
