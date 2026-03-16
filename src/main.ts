@@ -33,7 +33,7 @@ class LeviathanBot {
     private executor: BitunixExecutor;
     private candles: CandleTracker;
 
-    private paused = false;
+    private paused = true;     // V80: 默认暂停, CEO发1才激活
     private startTime = Date.now();
     private dailyTrades = 0;
     private dailyPnl = 0;
