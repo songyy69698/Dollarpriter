@@ -14,6 +14,7 @@ import {
     COOLDOWN_MS, WS_LAG_MAX_MS,
     ALLOW_SHORT, BTC_ENTRY_RATIO,
     ETH_SYMBOL, MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
+    WALL_RATIO_MIN,
     getMargin,
 } from "./config";
 
@@ -74,6 +75,12 @@ export class CausalStrategy {
         const btcBuyRatio = btcBuy / Math.max(btcSell, 0.001);
         const btcSellRatio = btcSell / Math.max(btcBuy, 0.001);
 
+        // ═══ ETH 買賣牆比 (V69 激网) ═══
+        const ethBidWall = snap.ethBidWallVol;
+        const ethAskWall = snap.ethAskWallVol;
+        const wallBidRatio = ethBidWall / Math.max(ethAskWall, 0.001);
+        const wallAskRatio = ethAskWall / Math.max(ethBidWall, 0.001);
+
         // ═══ 15M 结构性参考线 ═══
         const { lowest2_15m, highest2_15m, prev15mHigh, prev15mLow } = ct;
 
@@ -88,13 +95,15 @@ export class CausalStrategy {
         if (
             ALLOW_SHORT &&
             ethPrice < lowest2_15m &&
-            btcSellRatio >= BTC_ENTRY_RATIO
+            btcSellRatio >= BTC_ENTRY_RATIO &&
+            wallAskRatio >= WALL_RATIO_MIN
         ) {
             this.lastTradeTs = now;
             const reason =
                 `🐋 15M突破SHORT: $${ethPrice.toFixed(2)} < L2=${lowest2_15m.toFixed(2)} | ` +
                 `BTC卖压=${btcSellRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
-                `Guard=${prev15mHigh.toFixed(2)}+1.5pt`;
+                `牆=${wallAskRatio.toFixed(1)}x≥${WALL_RATIO_MIN}x | ` +
+                `Guard=${prev15mHigh.toFixed(2)}`;
             log(reason);
             return {
                 side: "short",
@@ -108,13 +117,15 @@ export class CausalStrategy {
         // --- LONG: 突破最近 2 根 15M 最高价 + BTC 买压主导 ---
         if (
             ethPrice > highest2_15m &&
-            btcBuyRatio >= BTC_ENTRY_RATIO
+            btcBuyRatio >= BTC_ENTRY_RATIO &&
+            wallBidRatio >= WALL_RATIO_MIN
         ) {
             this.lastTradeTs = now;
             const reason =
                 `🐋 15M突破LONG: $${ethPrice.toFixed(2)} > H2=${highest2_15m.toFixed(2)} | ` +
                 `BTC买压=${btcBuyRatio.toFixed(1)}x≥${BTC_ENTRY_RATIO}x | ` +
-                `Guard=${prev15mLow.toFixed(2)}-1.5pt`;
+                `牆=${wallBidRatio.toFixed(1)}x≥${WALL_RATIO_MIN}x | ` +
+                `Guard=${prev15mLow.toFixed(2)}`;
             log(reason);
             return {
                 side: "long",

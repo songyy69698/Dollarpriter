@@ -33,6 +33,7 @@ export const TAKER_FEE = 0.0004;
 // 15M 结构性入场
 // ═══════════════════════════════════════
 export const BTC_ENTRY_RATIO = 2.5;            // CEO校准: 2.5x (提高灵敏度)
+export const WALL_RATIO_MIN = 2.0;             // V69: 买卖牆比 ≥ 2.0 才入场
 export const CANDLE_LOOKBACK = 4;              // V-FINAL: 看最近 4 根 15M K线 (更严格入场)
 export const CANDLE_POLL_MS = 30_000;          // K线轮询间隔 30s
 
