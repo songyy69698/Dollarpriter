@@ -401,15 +401,31 @@ export class BitunixExecutor {
 
     // ═══ 余额 ═══
     async getBalance(): Promise<number> {
-        const queryStr = "marginCoinUSDT";
-        const headers = this.sign(queryStr);
+        // 尝试主 API
         try {
+            const queryStr = "marginCoinUSDT";
+            const headers = this.sign(queryStr);
             const res = await fetch(`${BITUNIX_BASE}/api/v1/futures/account?marginCoin=USDT`, {
                 headers: { ...headers, "Content-Type": "application/json", language: "en-US" },
             });
             const data = (await res.json()) as any;
-            return String(data?.code) === "0" ? +(data?.data?.available ?? 0) : 0;
-        } catch { return 0; }
+            if (String(data?.code) === "0" && data?.data?.available) {
+                return +(data.data.available);
+            }
+        } catch { /* fallback */ }
+
+        // Fallback: get_account_info
+        try {
+            const headers2 = this.sign();
+            const res2 = await fetch(`${BITUNIX_BASE}/api/v1/futures/account/get_account_info`, {
+                headers: { ...headers2, "Content-Type": "application/json", language: "en-US" },
+            });
+            const data2 = (await res2.json()) as any;
+            if (data2?.data?.available) return +(data2.data.available);
+            if (data2?.data?.equity) return +(data2.data.equity);
+        } catch { /* ignore */ }
+
+        return 0;
     }
 
     // ═══ 仓位同步 ═══

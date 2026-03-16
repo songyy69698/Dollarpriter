@@ -76,7 +76,7 @@ class LeviathanBot {
         const tmCfg = getTimeMode(utc8h, dt.getUTCMinutes());
 
         // 启动时检查熔断器
-        if (bal < CIRCUIT_BREAKER_BALANCE) {
+        if (bal > 0 && bal < CIRCUIT_BREAKER_BALANCE) {
             this.strategy.defenseMode = true;
             log("🚨 熔断器激活! 防御模式");
         }
@@ -119,7 +119,7 @@ class LeviathanBot {
         setInterval(async () => {
             this.currentBalance = await this.executor.getBalance();
             // 熔断器: 实时检测
-            if (this.currentBalance < CIRCUIT_BREAKER_BALANCE && !this.strategy.defenseMode) {
+            if (this.currentBalance > 0 && this.currentBalance < CIRCUIT_BREAKER_BALANCE && !this.strategy.defenseMode) {
                 this.strategy.defenseMode = true;
                 log("🚨 熔断器激活! 余额 < $" + CIRCUIT_BREAKER_BALANCE);
                 await notifyTG(`🚨 *熔断器激活!*\n余额 $${this.currentBalance.toFixed(2)} < $${CIRCUIT_BREAKER_BALANCE}\n自动切换防御模式: M=$20, 更严格入场`);
