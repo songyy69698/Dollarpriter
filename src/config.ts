@@ -94,14 +94,45 @@ export const EFFICIENCY_WINDOW = 100;
 export const AVG_VOL_WINDOW = 200;
 
 // ═══════════════════════════════════════
-// 时段限制 (UTC+8)
+// V80.1 时段模式
 // ═══════════════════════════════════════
-export const TRADE_HOUR_START = 0;
-export const TRADE_HOUR_END = 23;
+export type TimeMode = "TREND" | "SCALP" | "ANTIFAKE" | "TITAN" | "SLEEP";
+
+export interface TimeModeConfig {
+    mode: TimeMode;
+    btcThreshold: number;
+    slPoints: number;
+    allowBreakout: boolean;    // 是否允许追单
+}
+
+/** 根据 UTC+8 小时返回当前时段配置 */
+export function getTimeMode(hour: number, minute: number = 0): TimeModeConfig {
+    // 03:01-07:59 SLEEP
+    if (hour >= 3 && hour < 8) {
+        return { mode: "SLEEP", btcThreshold: Infinity, slPoints: 0, allowBreakout: false };
+    }
+    // 19:00-20:30 ANTIFAKE
+    if (hour === 19 || (hour === 20 && minute <= 30)) {
+        return { mode: "ANTIFAKE", btcThreshold: 15, slPoints: 6, allowBreakout: false };
+    }
+    // 20:31-03:00 TITAN
+    if (hour >= 21 || hour < 3 || (hour === 20 && minute > 30)) {
+        return { mode: "TITAN", btcThreshold: 15, slPoints: 6, allowBreakout: true };
+    }
+    // 08:00-10:59 TREND
+    if (hour >= 8 && hour < 11) {
+        return { mode: "TREND", btcThreshold: 10, slPoints: 4, allowBreakout: true };
+    }
+    // 11:00-18:59 SCALP
+    return { mode: "SCALP", btcThreshold: 10, slPoints: 4, allowBreakout: true };
+}
 
 // ═══════════════════════════════════════
-// 旧参数 (保留兼容, V80 不使用)
+// V80.1 振幅疲劳仪
 // ═══════════════════════════════════════
-export const STRUCT_SL_BUFFER = 0;
-export const WALL_RATIO_MIN = 4.5;
-export const EFFICIENCY_MIN = 1.2;
+export const FATIGUE_BLOCK_THRESHOLD = 0.7;    // fatigue > 0.7 禁止追单
+export const FATIGUE_HARVEST_THRESHOLD = 0.9;  // fatigue > 0.9 启动收割 / 允许反转
+export const AMPLITUDE_HISTORY_DAYS = 70;      // 平均振幅计算天数
+export const REVERSAL_BTC_THRESHOLD = 15;      // 反转单 BTC 门槛
+export const REVERSAL_EFF_MAX = 0.1;           // 反转单 吸收效率上限
+

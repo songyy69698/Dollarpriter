@@ -202,6 +202,94 @@ export class CandleTracker {
     }
 
     // ═══════════════════════════════════════════════
+    // V80.1 振幅疲劳仪
+    // ═══════════════════════════════════════════════
+
+    private _avg1hAmplitude = 0;       // 70 天 1H 平均振幅 (pt)
+    private _currentHourHigh = 0;
+    private _currentHourLow = Infinity;
+    private _currentHourStart = 0;     // 当前小时起始 ts
+
+    get avg1hAmplitude(): number { return this._avg1hAmplitude; }
+
+    /** 启动时拉取 70 天 1H K 线计算平均振幅 */
+    async bootstrapAmplitude(): Promise<boolean> {
+        try {
+            // 拉 70 天 ≈ 1680 根 1H K 线 (Bitunix limit 可能有限制，分批拉)
+            const limit = 500; // Bitunix 单次上限
+            let allAmplitudes: number[] = [];
+
+            for (let batch = 0; batch < 4; batch++) {
+                const url = `${BITUNIX_BASE}/api/v1/futures/market/kline?symbol=${this._symbol}&interval=1h&limit=${limit}`;
+                const res = await fetch(url);
+                const json = (await res.json()) as any;
+                if (String(json?.code) !== "0" || !Array.isArray(json?.data)) {
+                    log(`⚠️ 1H K线拉取失败 batch=${batch}`);
+                    break;
+                }
+
+                const candles = json.data;
+                for (const k of candles) {
+                    const h = +k.high;
+                    const l = +k.low;
+                    if (h > 0 && l > 0) {
+                        allAmplitudes.push(h - l);
+                    }
+                }
+
+                // 如果返回不足 limit，说明没有更多数据
+                if (candles.length < limit) break;
+            }
+
+            if (allAmplitudes.length > 0) {
+                const sum = allAmplitudes.reduce((a: number, b: number) => a + b, 0);
+                this._avg1hAmplitude = sum / allAmplitudes.length;
+                log(`📊 1H 均幅: ${this._avg1hAmplitude.toFixed(2)}pt (${allAmplitudes.length}根K线)`);
+                return true;
+            }
+            log(`⚠️ 1H 振幅数据为空`);
+            return false;
+        } catch (e) {
+            log(`❌ 1H 振幅计算异常: ${e}`);
+            return false;
+        }
+    }
+
+    /** 用实时价格更新当前小时的 high/low */
+    updateRealtimePrice(price: number) {
+        if (price <= 0) return;
+
+        const now = Date.now();
+        const hourMs = 3600_000;
+        const currentHourTs = Math.floor(now / hourMs) * hourMs;
+
+        // 新的一小时 → 重置
+        if (currentHourTs !== this._currentHourStart) {
+            this._currentHourStart = currentHourTs;
+            this._currentHourHigh = price;
+            this._currentHourLow = price;
+            return;
+        }
+
+        if (price > this._currentHourHigh) this._currentHourHigh = price;
+        if (price < this._currentHourLow) this._currentHourLow = price;
+    }
+
+    /** 获取疲劳比: currentAmplitude / avgAmplitude (0-∞) */
+    getFatigue(): number {
+        if (this._avg1hAmplitude <= 0) return 0;
+        if (this._currentHourHigh <= 0 || this._currentHourLow === Infinity) return 0;
+        const currentAmp = this._currentHourHigh - this._currentHourLow;
+        return currentAmp / this._avg1hAmplitude;
+    }
+
+    /** 当前小时内价格在振幅中的位置 (0=底部, 1=顶部) */
+    getPricePosition(price: number): number {
+        if (this._currentHourHigh <= this._currentHourLow) return 0.5;
+        return (price - this._currentHourLow) / (this._currentHourHigh - this._currentHourLow);
+    }
+
+    // ═══════════════════════════════════════════════
     // 状态快照
     // ═══════════════════════════════════════════════
 
@@ -217,6 +305,12 @@ export class CandleTracker {
             last1mClose: this.last1mClose,
             symbol: this._symbol,
             pollCount: this._pollCount,
+            // V80.1
+            avg1hAmplitude: this._avg1hAmplitude,
+            currentHourHigh: this._currentHourHigh,
+            currentHourLow: this._currentHourLow === Infinity ? 0 : this._currentHourLow,
+            fatigue: this.getFatigue(),
         };
     }
 }
+
