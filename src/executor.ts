@@ -571,9 +571,9 @@ export class BitunixExecutor {
     // ═══ 🔧 一键设置交易环境 (启动时和下单前调用) ═══
     async setupTradeEnv(symbol: string): Promise<void> {
         log(`🔧 设置交易环境: ${symbol}`);
-        await this.setMarginMode(symbol, "ISOLATION");  // 逐仓
+        await this.setMarginMode(symbol, "CROSS");  // 全仓
         await this.setLeverage(symbol, LEVERAGE);        // 200x
-        log(`🔧 交易环境就绪: ${symbol} | ISOLATION | ${LEVERAGE}x`);
+        log(`🔧 交易环境就绪: ${symbol} | CROSS | ${LEVERAGE}x`);
     }
 
     private async closePosition(

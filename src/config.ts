@@ -33,7 +33,7 @@ export const TAKER_FEE = 0.0004;
 // ═══════════════════════════════════════
 // V80 入场：穿牆狙击
 // ═══════════════════════════════════════
-export const BTC_ENTRY_RATIO = 10.0;           // 絕對失衡: BTC 領路 ≥ 10x
+export const BTC_ENTRY_RATIO = 6.0;            // CEO: 领路 6x 就开枪
 export const BREAKOUT_POWER_MIN = 3.0;         // 能量击穿 L1 牆 ≥ 3x
 export const ENTRY_WALL_RATIO_LONG = 2.0;      // LONG: bid/ask 牆比 > 2.0 (支撑强)
 export const ENTRY_WALL_RATIO_SHORT = 0.5;     // SHORT: bid/ask 牆比 < 0.5 (压制强)
@@ -43,9 +43,9 @@ export const ENTRY_WALL_RATIO_SHORT = 0.5;     // SHORT: bid/ask 牆比 < 0.5 (�
 // ═══════════════════════════════════════
 export const ABSORPTION_EFF_MIN = 0.15;        // 吸能止盈: 位移效率 < 0.15 (放量不动)
 export const ABSORPTION_WALL_PRESS = 2.0;      // 吸能止盈: 同时须反向牆压 > 2x
-export const ABSORPTION_PROFIT_MIN = 6;        // 吸能止盈: 最低盈利 6pt
+export const ABSORPTION_PROFIT_MIN = 10;       // CEO: 沒賺 10pt 不准智能平倉
 export const WALL_PRESSURE_EXIT = 3.0;         // 牆压止盈: 前方牆/后方牆 > 3x
-export const WALL_PRESSURE_PROFIT_MIN = 6;     // 牆压止盈: 最低盈利 6pt (与吸能同步)
+export const WALL_PRESSURE_PROFIT_MIN = 10;    // CEO: 同步 10pt
 
 // ═══════════════════════════════════════
 // Zero-Risk Gate
@@ -62,7 +62,7 @@ export const MIN_DEPTH_ETH = 50;
 // ═══════════════════════════════════════
 // 保证金 — V80 精确子弹
 // ═══════════════════════════════════════
-export const MARGIN_DEFAULT = 20;              // V80.1: $20 ($400本金)
+export const MARGIN_DEFAULT = 60;              // CEO: $60 子彈加大 ($400本金)
 export const MARGIN_TIERS: { minBalance: number; margin: number }[] = [
     { minBalance: 2000, margin: 400 },
     { minBalance: 1000, margin: 150 },
@@ -82,8 +82,8 @@ export function getMargin(balance: number): number {
 export const COOLDOWN_MS = 120_000;            // 120s 冷却
 export const MIN_HOLD_MS = 30_000;             // 最少持仓 30s
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 1;             // 🔒 V80 受控: 今晚只准开 1 单
-export const MAX_DAILY_LOSS = 20;              // V80: 日亏损上限 $20
+export const MAX_DAILY_TRADES = 3;             // $400本金, 放宽到 3 单
+export const MAX_DAILY_LOSS = 60;              // $400本金: 日亏换上限 $60
 
 // ═══════════════════════════════════════
 // K线 & WS 引擎参数
@@ -113,18 +113,18 @@ export function getTimeMode(hour: number, minute: number = 0): TimeModeConfig {
     }
     // 19:00-20:30 ANTIFAKE
     if (hour === 19 || (hour === 20 && minute <= 30)) {
-        return { mode: "ANTIFAKE", btcThreshold: 15, slPoints: 6, allowBreakout: false };
+        return { mode: "ANTIFAKE", btcThreshold: 6, slPoints: 6, allowBreakout: false };
     }
     // 20:31-03:00 TITAN
     if (hour >= 21 || hour < 3 || (hour === 20 && minute > 30)) {
-        return { mode: "TITAN", btcThreshold: 15, slPoints: 6, allowBreakout: true };
+        return { mode: "TITAN", btcThreshold: 6, slPoints: 6, allowBreakout: true };
     }
     // 08:00-10:59 TREND
     if (hour >= 8 && hour < 11) {
-        return { mode: "TREND", btcThreshold: 10, slPoints: 4, allowBreakout: true };
+        return { mode: "TREND", btcThreshold: 6, slPoints: 4, allowBreakout: true };
     }
     // 11:00-18:59 SCALP
-    return { mode: "SCALP", btcThreshold: 10, slPoints: 4, allowBreakout: true };
+    return { mode: "SCALP", btcThreshold: 6, slPoints: 4, allowBreakout: true };
 }
 
 // ═══════════════════════════════════════
