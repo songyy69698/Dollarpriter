@@ -1,8 +1,8 @@
 /**
- * 🔌 Bitunix WebSocket 数据引擎 — V52.2 Fee Shield Recovery
+ * 🔌 Bitunix WebSocket 数据引擎 — V75 能量 vs 阻力
  * ═══════════════════════════════════════════════════════
  * 三币种订阅: SOLUSDT + ETHUSDT + BTCUSDT
- * 新增: ETH spread/depth, Delta 方向追踪 (CVD 方向一致性)
+ * V75: L1 首档牆量 + 瞬时成交量 + 牆体变化率
  */
 
 import {
@@ -57,19 +57,26 @@ export interface CausalSnapshot {
     ethAvgEfficiency: number;
     ethConnected: boolean;
 
-    // ── V52.2 新增 ──
-    ethSpread: number;           // ETH 点差
-    ethBestAsk: number;          // ETH 最佳卖价
-    ethBestBid: number;          // ETH 最佳买价
-    ethTop3Depth: number;        // ETH Ask Top3 深度总量
-    recentDeltaDirs: number[];   // 最近 N 笔 Delta 方向 (+1=买, -1=卖)
-    ethRecentDeltaDirs: number[];// ETH 最近 N 笔 Delta 方向
+    // ── V52.2 ──
+    ethSpread: number;
+    ethBestAsk: number;
+    ethBestBid: number;
+    ethTop3Depth: number;
+    recentDeltaDirs: number[];
+    ethRecentDeltaDirs: number[];
 
-    // ── V52.4 延迟诊断 ──
-    wsLatencyMs: number;         // WS 最近一笔 trade 延迟
-    wsLatencyAvg: number;        // WS 平均延迟
-    wsLatencyMax: number;        // WS 最大延迟
-    highLatencyCount: number;    // >200ms 延迟次数
+    // ── V75 能量 vs 阻力 ──
+    ethL1AskVol: number;         // ETH 首档卖牆量
+    ethL1BidVol: number;         // ETH 首档买牆量
+    ethInstantVol: number;       // ETH 2s 瞬时成交量
+    ethBidWallChange: number;    // ETH 买盘牆变化率 (-0.6 = 下降60%)
+    ethLastPrice: number;        // ETH 上一笔成交价 (吸收检测用)
+
+    // ── 延迟诊断 ──
+    wsLatencyMs: number;
+    wsLatencyAvg: number;
+    wsLatencyMax: number;
+    highLatencyCount: number;
 }
 
 // ═══════════════════════════════════════════════
@@ -86,7 +93,15 @@ class SymbolTracker {
     bestBid = 0;
     askWallVol = 0;
     bidWallVol = 0;
-    top3Depth = 0;              // V52.2: Ask Top3 深度
+    top3Depth = 0;
+
+    // V75: L1 首档牆量
+    l1AskVol = 0;
+    l1BidVol = 0;
+
+    // V75: 牆体变化率追踪
+    bidWallHistory: { ts: number; vol: number }[] = [];
+    readonly WALL_HISTORY_MS = 5_000;
 
     deltaRing: { ts: number; buyVol: number; sellVol: number; efficiency: number; vol: number }[] = [];
     readonly DELTA_WINDOW_MS = 10_000;
@@ -95,9 +110,8 @@ class SymbolTracker {
     volRing: number[] = [];
     lastPrice = 0;
 
-    // V52.2: Delta 方向追踪 (+1=买入主导, -1=卖出主导)
     deltaDirRing: number[] = [];
-    readonly DELTA_DIR_MAX = 10;  // 保留最近 10 笔
+    readonly DELTA_DIR_MAX = 10;
 
     constructor(symbol: string) {
         this.symbol = symbol;
@@ -136,9 +150,33 @@ class SymbolTracker {
         return this.deltaRing[this.deltaRing.length - 1]?.vol ?? 0;
     }
 
-    /** V52.2: 获取最近 N 笔 Delta 方向 */
     getRecentDeltaDirs(): number[] {
         return this.deltaDirRing.slice(-this.DELTA_DIR_MAX);
+    }
+
+    /** V75: 瞬时成交量 (最近 windowMs 毫秒的总成交量) */
+    getInstantVol(windowMs = 2000): number {
+        const now = Date.now();
+        let total = 0;
+        for (let i = this.deltaRing.length - 1; i >= 0; i--) {
+            if (now - this.deltaRing[i].ts > windowMs) break;
+            total += this.deltaRing[i].vol;
+        }
+        return total;
+    }
+
+    /** V75: 买盘牆变化率 (vs 5s 前，-0.6 = 下降 60%) */
+    getBidWallChange(): number {
+        if (this.bidWallHistory.length < 2) return 0;
+        const now = Date.now();
+        // 找到最接近 5s 前的记录
+        let oldVol = this.bidWallHistory[0].vol;
+        for (const h of this.bidWallHistory) {
+            if (now - h.ts >= this.WALL_HISTORY_MS) oldVol = h.vol;
+            else break;
+        }
+        if (oldVol <= 0) return 0;
+        return (this.bidWallVol - oldVol) / oldVol;
     }
 
     handleTrade(trades: any) {
@@ -198,13 +236,14 @@ class SymbolTracker {
         }
 
         let askVol = 0;
-        let top3 = 0;  // V52.2: Top3 深度
+        let top3 = 0;
         for (let i = 0; i < Math.min(5, asks.length); i++) {
             const entry = asks[i];
             const vol = +(Array.isArray(entry) ? entry[1] : entry?.sz || entry?.qty || entry?.v || 0);
-            if (i === 0) this.bestAsk = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
+            const price = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
+            if (i === 0) { this.bestAsk = price; this.l1AskVol = vol; }  // V75: L1
             askVol += vol;
-            if (i < 3) top3 += vol;  // V52.2: 只累加前 3 档
+            if (i < 3) top3 += vol;
         }
         this.askWallVol = askVol;
         this.top3Depth = top3;
@@ -213,10 +252,19 @@ class SymbolTracker {
         for (let i = 0; i < Math.min(5, bids.length); i++) {
             const entry = bids[i];
             const vol = +(Array.isArray(entry) ? entry[1] : entry?.sz || entry?.qty || entry?.v || 0);
-            if (i === 0) this.bestBid = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
+            const price = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
+            if (i === 0) { this.bestBid = price; this.l1BidVol = vol; }  // V75: L1
             bidVol += vol;
         }
         this.bidWallVol = bidVol;
+
+        // V75: 记录牆体历史 (用于变化率计算)
+        const now = Date.now();
+        this.bidWallHistory.push({ ts: now, vol: bidVol });
+        // 清理超过 10s 的旧记录
+        while (this.bidWallHistory.length > 0 && now - this.bidWallHistory[0].ts > this.WALL_HISTORY_MS * 2) {
+            this.bidWallHistory.shift();
+        }
     }
 }
 
@@ -366,7 +414,7 @@ export class BitunixWSEngine {
             ethAvgEfficiency,
             ethConnected: this.eth.price > 0,
 
-            // V52.2 新增
+            // V52.2
             ethSpread: this.eth.bestAsk > 0 && this.eth.bestBid > 0
                 ? this.eth.bestAsk - this.eth.bestBid : 999,
             ethBestAsk: this.eth.bestAsk,
@@ -375,7 +423,14 @@ export class BitunixWSEngine {
             recentDeltaDirs: this.sol.getRecentDeltaDirs(),
             ethRecentDeltaDirs: this.eth.getRecentDeltaDirs(),
 
-            // V52.4 延迟诊断
+            // V75 能量 vs 阻力
+            ethL1AskVol: this.eth.l1AskVol,
+            ethL1BidVol: this.eth.l1BidVol,
+            ethInstantVol: this.eth.getInstantVol(2000),
+            ethBidWallChange: this.eth.getBidWallChange(),
+            ethLastPrice: this.eth.lastPrice,
+
+            // 延迟诊断
             wsLatencyMs: this._wsLatency,
             wsLatencyAvg: this._wsLatencyCount > 0 ? Math.round(this._wsLatencySum / this._wsLatencyCount) : 0,
             wsLatencyMax: this._wsLatencyMax,

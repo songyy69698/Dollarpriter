@@ -1,8 +1,8 @@
 /**
- * 🐋 Dollarprinter V69 — NO-EXCUSE
+ * 🐋 Dollarprinter V75 — 能量 vs 阻力
  * ═══════════════════════════════════════
- * $48 残局回血 | 5.5x 能量爆发 + 4.5x 牆体护卫
- * 8pt 秒级保本 + Iron Guard + 效率衰竭止盈
+ * 牆体坍塌入场 + 能量吸收止盈 + 撤单防御 + Iron Guard
+ * 8pt 秒级保本 + 10pt 硬止损
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -15,7 +15,7 @@ import {
     SL_POINTS, STRUCT_SL_BUFFER, ZERO_RISK_THRESHOLD,
     MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
     MAX_DAILY_TRADES, MAX_DAILY_LOSS,
-    BTC_ENTRY_RATIO,
+    BTC_ENTRY_RATIO, BREAKOUT_POWER_MIN,
     ETH_SYMBOL,
     SYMBOL_PRECISION,
     getMargin,
@@ -32,7 +32,7 @@ class LeviathanBot {
     private executor: BitunixExecutor;
     private candles: CandleTracker;
 
-    private paused = false;    // V69: 默认激活, 不需发1
+    private paused = false;    // V75: 默认激活, 不需发1
     private startTime = Date.now();
     private dailyTrades = 0;
     private dailyPnl = 0;
@@ -55,8 +55,8 @@ class LeviathanBot {
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🐋 Dollarprinter V69 — NO-EXCUSE");
-        log("  🔥 $48 残局回血 | 5.5x + 4.5x + 8pt保本");
+        log("  🐋 Dollarprinter V75 — 能量 vs 阻力");
+        log("  🔨 牆体坍塌入场 + 能量吸收止盈 + 撤单防御");
         log("  📡 三币种: SOL + BTC + ETH");
         log("════════════════════════════════════════════");
 
@@ -71,22 +71,19 @@ class LeviathanBot {
         const bal = await this.executor.getBalance();
         this.currentBalance = bal;
         const margin = getMargin(bal);
-        const cs = this.candles.getSnapshot();
 
         log(`  💰 余额: $${bal.toFixed(2)}`);
         log(`  📊 ${ETH_SYMBOL} | ${LEVERAGE}x 杠杆 | M=$${margin}`);
-        log(`  🐋 入场: 15M突破 + BTC≥${BTC_ENTRY_RATIO}x`);
-        log(`  📊 H2=$${cs.highest2_15m.toFixed(2)} | L2=$${cs.lowest2_15m.toFixed(2)}`);
+        log(`  🔨 入场: 牆塌≥${BREAKOUT_POWER_MIN}x + BTC≥${BTC_ENTRY_RATIO}x`);
         log(`  🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt`);
         log(`  ⚔️ Iron Guard: prev15M ±${STRUCT_SL_BUFFER}pt (1M确认)`);
         log(`  💎 复利: $20→$60→$150→$400`);
         log("════════════════════════════════════════════");
 
         await notifyTG(
-            `🐋 *V69 NO-EXCUSE 已激活*\n` +
+            `🐋 *V75 能量 vs 阻力 已激活*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x | M=$${margin}\n` +
-            `📊 H2=$${cs.highest2_15m.toFixed(2)} | L2=$${cs.lowest2_15m.toFixed(2)}\n` +
-            `🐋 15M突破 + BTC≥${BTC_ENTRY_RATIO}x\n` +
+            `🔨 牆塌≥${BREAKOUT_POWER_MIN}x + BTC≥${BTC_ENTRY_RATIO}x\n` +
             `🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt\n` +
             `⚔️ Iron Guard ±${STRUCT_SL_BUFFER}pt\n` +
             `🟢 自动扫描中...`,
@@ -116,7 +113,7 @@ class LeviathanBot {
         setInterval(async () => {
             this.currentBalance = await this.executor.getBalance();
         }, 60_000);
-        log("🟢 V69 就绪 — 自动扫描中");
+        log("🟢 V75 就绪 — 自动扫描中");
     }
 
     private async waitForWS() {
@@ -131,7 +128,7 @@ class LeviathanBot {
     }
 
     // ═══════════════════════════════════════
-    // 策略循环 — 15M 结构性突破
+    // 策略循环 — V75 牆体坍塌
     // ═══════════════════════════════════════
 
     private strategyLoop() {
@@ -170,11 +167,11 @@ class LeviathanBot {
                 await Bun.sleep(500);
                 await this.executor.syncPositions();
             }
-        }, 500); // 每 500ms 检查 (15M策略不需太快)
+        }, 500); // 每 500ms 检查
     }
 
     // ═══════════════════════════════════════
-    // 持仓监控 — Iron Guard
+    // 持仓监控 — V75 Iron Guard + 能量吸收 + 撤单防御
     // ═══════════════════════════════════════
 
     private positionLoop() {
@@ -190,7 +187,12 @@ class LeviathanBot {
                 this.candles.prev15mHigh,
                 this.candles.prev15mLow,
                 this.candles.last1mClose,
-                s.ethEfficiency,
+                // V75 能量 vs 阻力数据
+                s.ethL1AskVol,
+                s.ethL1BidVol,
+                s.ethInstantVol,
+                s.ethBidWallChange,
+                s.ethLastPrice,
             );
 
             if (r.closed) {
@@ -221,19 +223,19 @@ class LeviathanBot {
             lastId = await pollTGCommands(lastId, {
                 "1": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V69 NO-EXCUSE 激活*\n15M 结构性趋势扫描中...`);
+                    await notifyTG(`✅ *V75 能量 vs 阻力 激活*\n牆体坍塌扫描中...`);
                 },
                 "/start": async () => {
                     this.paused = false;
-                    await notifyTG(`✅ *V69 NO-EXCUSE 激活*\n15M 结构性趋势扫描中...`);
+                    await notifyTG(`✅ *V75 能量 vs 阻力 激活*\n牆体坍塌扫描中...`);
                 },
                 "0": async () => {
                     this.paused = true;
-                    await notifyTG("🔴 *V69 暂停*");
+                    await notifyTG("🔴 *V75 暂停*");
                 },
                 "/stop": async () => {
                     this.paused = true;
-                    await notifyTG("🔴 *V69 暂停*");
+                    await notifyTG("🔴 *V75 暂停*");
                 },
                 s: async () => { await this.sendStatus(); },
                 "/status": async () => { await this.sendStatus(); },
@@ -269,12 +271,12 @@ class LeviathanBot {
                 },
                 h: async () => {
                     await notifyTG(
-                        `📖 *V69 NO-EXCUSE*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
+                        `📖 *V75 能量 vs 阻力*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
                 "/help": async () => {
                     await notifyTG(
-                        `📖 *V69 NO-EXCUSE*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
+                        `📖 *V75 能量 vs 阻力*\n1 启动\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`,
                     );
                 },
             });
@@ -289,12 +291,15 @@ class LeviathanBot {
         const s = this.ws.getSnapshot();
         const cs = this.candles.getSnapshot();
 
-        let m = `📡 *【V69 诊断报告】*\n`;
+        let m = `📡 *【V75 诊断报告】*\n`;
         m += `──────────────\n`;
         m += `📊 *15M K线:* ${cs.count15m}根 | 1M: ${cs.count1m}根\n`;
-        m += `   H2=${cs.highest2_15m.toFixed(2)} | L2=${cs.lowest2_15m.toFixed(2)}\n`;
         m += `   prevH=${cs.prev15mHigh.toFixed(2)} | prevL=${cs.prev15mLow.toFixed(2)}\n`;
         m += `   1M close=$${cs.last1mClose.toFixed(2)}\n`;
+        m += `──────────────\n`;
+        m += `🔨 *V75 数据:*\n`;
+        m += `   L1卖牆=${s.ethL1AskVol.toFixed(2)} | L1买牆=${s.ethL1BidVol.toFixed(2)}\n`;
+        m += `   瞬量=${s.ethInstantVol.toFixed(2)} | 牆变=${(s.ethBidWallChange * 100).toFixed(0)}%\n`;
         m += `──────────────\n`;
         m += `🕒 WS延迟: ${s.wsLatencyMs}ms (avg=${s.wsLatencyAvg}ms)\n`;
         if (this.executor.lastEntryMs > 0) {
@@ -322,18 +327,16 @@ class LeviathanBot {
         const uptimeMs = Date.now() - this.startTime;
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
-        const cs = this.candles.getSnapshot();
 
-        let m = `🐋 *V69 NO-EXCUSE*\n`;
+        let m = `🐋 *V75 能量 vs 阻力*\n`;
         m += `──────────────\n`;
         m += `💰 余额: $${b.toFixed(2)} | M=$${margin}\n`;
         m += `🔌 WS: ${s.connected ? "🟢" : "🔴"} | ${this.paused ? "🔴暂停" : "🟢运行"}\n`;
         m += `⚙️ 运行: ${uptimeH}h${uptimeM}m | 扫描: ${this.strategy.getScanCount()}\n`;
         m += `──────────────\n`;
-        m += `🐋 15M突破 + BTC≥${BTC_ENTRY_RATIO}x\n`;
-        m += `📊 H2=$${cs.highest2_15m.toFixed(2)} | L2=$${cs.lowest2_15m.toFixed(2)}\n`;
-        m += `⚔️ Guard: prevH=$${cs.prev15mHigh.toFixed(2)} | prevL=$${cs.prev15mLow.toFixed(2)}\n`;
+        m += `🔨 牆塌≥${BREAKOUT_POWER_MIN}x + BTC≥${BTC_ENTRY_RATIO}x\n`;
         m += `🛡️ SL=${SL_POINTS}pt | Zero-Risk≥${ZERO_RISK_THRESHOLD}pt\n`;
+        m += `🔨 L1賣=${s.ethL1AskVol.toFixed(1)} L1買=${s.ethL1BidVol.toFixed(1)} 瞬量=${s.ethInstantVol.toFixed(1)}\n`;
         m += `──────────────\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)} | Sp=${s.ethSpread.toFixed(3)}\n`;
         m += `₿ BTC $${s.btcPrice.toFixed(1)} | 买:${s.btcBuyDelta.toFixed(1)} 卖:${s.btcSellDelta.toFixed(1)}\n`;
@@ -367,12 +370,11 @@ class LeviathanBot {
         const uptimeMs = Date.now() - this.startTime;
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
-        const cs = this.candles.getSnapshot();
 
-        let m = `💓 *V69 NO-EXCUSE*\n`;
+        let m = `💓 *V75 能量 vs 阻力*\n`;
         m += `${uptimeH}h${uptimeM}m | ${this.paused ? "🔴" : "🟢"}\n`;
         m += `ETH $${s.ethPrice.toFixed(2)} | BTC $${s.btcPrice.toFixed(1)}\n`;
-        m += `15M: H2=$${cs.highest2_15m.toFixed(2)} L2=$${cs.lowest2_15m.toFixed(2)}\n`;
+        m += `L1賣=${s.ethL1AskVol.toFixed(1)} L1買=${s.ethL1BidVol.toFixed(1)} 瞬量=${s.ethInstantVol.toFixed(1)}\n`;
         m += `余$${b.toFixed(2)} | M=$${getMargin(b)}\n`;
         m += `今${this.dailyTrades}单 ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U | 累${this.totalTrades}单 ${this.totalPnl >= 0 ? "+" : ""}${this.totalPnl.toFixed(1)}U`;
 

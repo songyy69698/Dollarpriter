@@ -1,15 +1,16 @@
 /**
- * ⚡ Bitunix 执行器 — V69 "NO-EXCUSE"
+ * ⚡ Bitunix 执行器 — V75 "能量 vs 阻力"
  * ═══════════════════════════════════════════
  * MARKET 入场 (IOC) + Iron Guard 出场
- * 硬止损 10pt → Zero-Risk Gate 8pt → 15M 结构性止损
- * 效率衰竭止盈 + 无固定超时
+ * 硬止损 10pt → Zero-Risk Gate 8pt → 能量吸收止盈 → 撤单防御
  */
 
 import {
     BITUNIX_BASE, SYMBOL, ETH_SYMBOL, LEVERAGE,
     SL_POINTS, TAKER_FEE, SYMBOL_PRECISION,
     STRUCT_SL_BUFFER, ZERO_RISK_THRESHOLD, ZERO_RISK_SL_OFFSET,
+    ABSORPTION_RATIO_MIN, ABSORPTION_PRICE_TOL,
+    BID_WALL_DROP_THRESH, V75_EXIT_PROFIT_MIN,
 } from "./config";
 
 function log(msg: string) {
@@ -269,14 +270,19 @@ export class BitunixExecutor {
     }
 
     // ═══════════════════════════════════════════════
-    // V69 Iron Guard — 出场逻辑
+    // V75 Iron Guard — 出场逻辑
     // ═══════════════════════════════════════════════
     async checkPosition(
         currentPrice: number,
         prev15mHigh: number,
         prev15mLow: number,
         last1mClose: number,
-        ethEfficiency: number = 999,
+        // V75 新参数
+        ethL1AskVol: number = 0,
+        ethL1BidVol: number = 0,
+        ethInstantVol: number = 0,
+        ethBidWallChange: number = 0,
+        ethLastPrice: number = 0,
     ): Promise<{ closed: boolean; reason: string; netPnlU: number; symbol: string }> {
         if (!this.inPosition) return { closed: false, reason: "", netPnlU: 0, symbol: "" };
 
@@ -300,7 +306,7 @@ export class BitunixExecutor {
             reason = `🚨 高滑点激进出场 [Slip=${this.lastSlippage.toFixed(2)}pt]: BE+${pnlPt.toFixed(prec.price)}pt`;
         }
 
-        // ═══ Layer 3: Zero-Risk Gate — 利润≥20pt 时移动 SL ═══
+        // ═══ Layer 3: Zero-Risk Gate — 利润≥${ZERO_RISK_THRESHOLD}pt 时移动 SL ═══
         if (!reason && !this.zeroRiskTriggered && pnlPt >= ZERO_RISK_THRESHOLD) {
             this.zeroRiskTriggered = true;
             const newSl = this.positionSide === "long"
@@ -309,7 +315,6 @@ export class BitunixExecutor {
 
             log(`🛡️ Zero-Risk Gate 触发! +${pnlPt.toFixed(prec.price)}pt ≥ ${ZERO_RISK_THRESHOLD}pt → SL移到 ${newSl.toFixed(prec.price)}`);
 
-            // 取消旧 SL, 挂新 SL
             if (this.slOrderId) await this.cancelOrder(sym, this.slOrderId);
             const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
             const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, newSl, prec);
@@ -318,9 +323,28 @@ export class BitunixExecutor {
             else log("⚠️ Zero-Risk SL 挂单失败!");
         }
 
-        // ═══ Layer 3.5: V69 效率衰竭止盈 — 因大果小, 落袋为安 ═══
-        if (!reason && ethEfficiency < 0.15 && pnlPt > 15) {
-            reason = `💰 V69 效率衰竭止盈: 效率=${ethEfficiency.toFixed(3)} + 盈利=${pnlPt.toFixed(prec.price)}pt`;
+        // ═══ Layer 3.5a: V75 能量吸收止盈 — 牆厚吸能，顶部确认 ═══
+        if (!reason && pnlPt > V75_EXIT_PROFIT_MIN && ethInstantVol > 0) {
+            // LONG: 卖牆吸收买能量
+            // SHORT: 买牆吸收卖能量
+            const wallVol = this.positionSide === "long" ? ethL1AskVol : ethL1BidVol;
+            const absorptionRatio = wallVol / Math.max(ethInstantVol, 0.001);
+            const priceDelta = Math.abs(currentPrice - ethLastPrice);
+
+            if (absorptionRatio >= ABSORPTION_RATIO_MIN && priceDelta < ABSORPTION_PRICE_TOL) {
+                reason = `💰 V75 能量吸收: 牆/量=${absorptionRatio.toFixed(1)}x 价差=${priceDelta.toFixed(3)} +${pnlPt.toFixed(prec.price)}pt — 最高點自動收割`;
+            }
+        }
+
+        // ═══ Layer 3.5b: V75 撤单防御 — 支撑牆瞬间抽离 ═══
+        if (!reason && pnlPt > V75_EXIT_PROFIT_MIN && ethBidWallChange < BID_WALL_DROP_THRESH) {
+            if (this.positionSide === "long") {
+                // LONG 持仓: 买盘牆崩溃 = 支撑消失
+                reason = `🛡️ V75 撤單防御: 買盤牆變化=${(ethBidWallChange * 100).toFixed(0)}% +${pnlPt.toFixed(prec.price)}pt — 支撑消失`;
+            } else {
+                // SHORT 持仓: 买盘牆崩溃 = 下行加速，不触发出场
+                // (可以扩展: 监控 ask wall 变化作为 SHORT 的防御)
+            }
         }
 
         // ═══ Layer 4: Iron Guard — 15M 结构性止损 ═══
