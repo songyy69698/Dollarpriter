@@ -62,6 +62,13 @@ export class BitunixExecutor {
     highSlippage = false;
     lastError = "";               // 最近一次 API 错误
 
+    // ═══ 1. Keep-Alive 连接池 ═══
+    private readonly _keepAliveHeaders = {
+        "Content-Type": "application/json",
+        language: "en-US",
+        Connection: "keep-alive",
+    };
+
     constructor(apiKey: string, secretKey: string) {
         this.apiKey = apiKey;
         this.secretKey = secretKey;
@@ -260,7 +267,54 @@ export class BitunixExecutor {
         if (slOk) log(`🛡️ SL: ${slPrice.toFixed(prec.price)} (-${SL_POINTS}pt) [${this.lastSlMs}ms]`);
         else log("⚠️ SL 挂单失败!");
 
+        // ═══ 3. SL Watchdog: 500ms 内确认 SL 存在 ═══
+        this.slWatchdog(targetSymbol, actualQty, side, actualPrice, prec);
+
         return true;
+    }
+
+    /** SL 看门狗: 500ms 内确认 SL 订单存在，否则强平 */
+    private async slWatchdog(
+        sym: string, qty: number, side: "long" | "short",
+        entryPrice: number, prec: { qty: number; price: number },
+    ): Promise<void> {
+        await Bun.sleep(500);
+        if (!this.inPosition) return; // 已平仓
+
+        // 检查是否有活跃 SL 订单
+        try {
+            const queryStr = "symbol" + sym;
+            const headers = this.sign(queryStr);
+            const res = await fetch(
+                `${BITUNIX_BASE}/api/v1/futures/order/get_pending_orders?symbol=${sym}`,
+                { headers: { ...headers, ...this._keepAliveHeaders } },
+            );
+            const data = (await res.json()) as any;
+            const orders = data?.data?.orderList || data?.data || [];
+            const hasSL = Array.isArray(orders) && orders.some(
+                (o: any) => (o.orderType || "").includes("STOP"),
+            );
+
+            if (hasSL) {
+                log(`✅ Watchdog: SL 订单已确认`);
+            } else {
+                log(`🚨 Watchdog: 500ms内未发现SL! 重试挂单...`);
+                const closeSide = side === "long" ? "SELL" : "BUY";
+                const slPrice = side === "long"
+                    ? entryPrice - SL_POINTS
+                    : entryPrice + SL_POINTS;
+                const retryOk = await this.placeStopMarket(sym, closeSide, qty, slPrice, prec);
+                if (retryOk) {
+                    log(`✅ Watchdog: SL 重试成功`);
+                } else {
+                    log(`💣 Watchdog: SL 重试失败! 强制平仓保命!`);
+                    const price = this.positionSide === "long" ? entryPrice - 2 : entryPrice + 2;
+                    await this.forceCloseAll(price);
+                }
+            }
+        } catch (e) {
+            log(`🚨 Watchdog 异常: ${e}`);
+        }
     }
 
     // ═══ STOP_MARKET ═══
@@ -572,19 +626,15 @@ export class BitunixExecutor {
         try {
             const res = await fetch(`${BITUNIX_BASE}/api/v1/futures/trade/place_order`, {
                 method: "POST",
-                headers: { ...headers, "Content-Type": "application/json", language: "en-US" },
+                headers: { ...headers, ...this._keepAliveHeaders },
                 body,
             });
             const json = (await res.json()) as any;
             if (String(json?.code) === "0") return json?.data || json;
 
-            // 🚨 完整原始响应日志
             const errMsg = `code=${json?.code} msg=${json?.msg}`;
             this.lastError = errMsg;
-            log(`🚨 [ORDER-FAIL] type=${data.orderType} side=${data.side} qty=${data.qty} symbol=${data.symbol}`);
-            log(`🚨 [ORDER-FAIL] ${errMsg}`);
-            log(`🚨 [ORDER-FAIL] RAW: ${JSON.stringify(json).slice(0, 500)}`);
-            log(`🚨 [ORDER-FAIL] REQ: ${body}`);
+            log(`🚨 [ORDER-FAIL] ${data.orderType} ${data.side} ${data.qty} | ${errMsg}`);
             return null;
         } catch (e) {
             log(`❌ API 异常: ${e}`);
