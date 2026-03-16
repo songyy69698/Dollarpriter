@@ -353,24 +353,11 @@ export class BitunixExecutor {
             }
         }
 
-        // ═══ Layer 4: Iron Guard — 15M 结构性止损 ═══
-        if (!reason && prev15mHigh > 0 && prev15mLow > 0 && prev15mLow < Infinity) {
-            if (this.positionSide === "short") {
-                // SHORT: 1M 收盘 > 前15M最高价 + 缓冲 → 结构破坏
-                const guardLine = prev15mHigh + STRUCT_SL_BUFFER;
-                this.structGuardPrice = guardLine;
-                if (last1mClose > guardLine) {
-                    reason = `🐋 Iron Guard SHORT: 1M close $${last1mClose.toFixed(prec.price)} > Guard $${guardLine.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
-                }
-            } else if (this.positionSide === "long") {
-                // LONG: 1M 收盘 < 前15M最低价 - 缓冲 → 结构破坏
-                const guardLine = prev15mLow - STRUCT_SL_BUFFER;
-                this.structGuardPrice = guardLine;
-                if (last1mClose < guardLine) {
-                    reason = `🐋 Iron Guard LONG: 1M close $${last1mClose.toFixed(prec.price)} < Guard $${guardLine.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
-                }
-            }
-        }
+        // ═══ Layer 4: Iron Guard — V75 已禁用 ═══
+        // V75 用订单流入场, 价格可能在 15M 结构线之外,
+        // Iron Guard 会误判「结构破坏」导致立即平仓.
+        // V75 依赖: 硬止损 4pt + Zero-Risk 8pt + 能量吸收 + 撤单防御
+        // if (!reason && prev15mHigh > 0 ...) { ... }
 
         // ═══ 执行平仓 ═══
         if (reason) {
