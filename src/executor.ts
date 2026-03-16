@@ -139,7 +139,7 @@ export class BitunixExecutor {
         return { "api-key": this.apiKey, sign: signature, nonce, timestamp };
     }
 
-    // ═══ MARKET 入场 (IOC) ═══
+    // ═══ V80.1 方案B LIMIT 入场 (maker 回扣) ═══
     async atomicEntry(
         side: "long" | "short",
         currentPrice: number,
@@ -172,14 +172,15 @@ export class BitunixExecutor {
         if (qty <= 0) { this._entering = false; return false; }
 
         const tag = genOrderTag();
-        log(`🚀 [ENTRY] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)} | M=$${margin} | Lev=${LEVERAGE}x`);
+        log(`🚀 [LIMIT] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)} | M=$${margin}`);
 
-        // ═══ Bitunix 官方参数 (tradeSide=OPEN 是必填!) ═══
+        // ═══ V80.1 LIMIT 单 (maker fee) ═══
         const orderData: Record<string, string> = {
             symbol: targetSymbol,
             side: side === "long" ? "BUY" : "SELL",
             tradeSide: "OPEN",
-            orderType: "MARKET",
+            orderType: "LIMIT",
+            price: currentPrice.toFixed(prec.price),
             qty: qty.toString(),
             clientId: tag,
         };
@@ -192,9 +193,9 @@ export class BitunixExecutor {
             this._entering = false;
             const errDetail = this.lastError || "未知错误";
             const reqBody = JSON.stringify(orderData);
-            log(`❌ MARKET 开仓失败 [${targetSymbol}]: ${errDetail}`);
+            log(`❌ LIMIT 开仓失败 [${targetSymbol}]: ${errDetail}`);
             if (onDepthFail) await onDepthFail(
-                `❌ MARKET 开仓失败 [${coinName}]\n` +
+                `❌ LIMIT 开仓失败 [${coinName}]\n` +
                 `💰 余额: $${balance.toFixed(2)} | M=$${margin}\n` +
                 `🚀 ${side.toUpperCase()} ${qty} @ $${currentPrice.toFixed(prec.price)}\n` +
                 `🚨 错误: ${errDetail}\n` +
@@ -215,8 +216,8 @@ export class BitunixExecutor {
         const HIGH_SLIPPAGE_PT = 1.5;
         this.highSlippage = slippage > HIGH_SLIPPAGE_PT;
 
-        log(`✅ MARKET ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} [${targetSymbol}] (${ms.toFixed(0)}ms)`);
-        log(`[DRIFT] SignalPrice: ${currentPrice.toFixed(prec.price)} | FillPrice: ${actualPrice.toFixed(prec.price)} | Slippage: ${slippage.toFixed(prec.price)}pt${this.highSlippage ? " 🚨 HIGH" : ""}`);
+        log(`✅ LIMIT ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} [${targetSymbol}] (${ms.toFixed(0)}ms)`);
+        log(`[DRIFT] Signal: ${currentPrice.toFixed(prec.price)} | Fill: ${actualPrice.toFixed(prec.price)} | Slip: ${slippage.toFixed(prec.price)}pt${this.highSlippage ? " 🚨" : ""}`);
 
         this.inPosition = true;
         this._entering = false;

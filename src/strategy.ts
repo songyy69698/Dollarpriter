@@ -66,20 +66,64 @@ export class CausalStrategy {
         if (snap.ethSpread > MAX_SPREAD_POINTS) return null;
         if (snap.ethTop3Depth < MIN_DEPTH_ETH) return null;
 
+        // ═══ 订单流数据 (提前声明, 供疲劳/ANTIFAKE 使用) ═══
+        const instantVol = snap.ethInstantVol;
+        const l1Ask = snap.ethL1AskVol;
+        const l1Bid = snap.ethL1BidVol;
+        const margin = getMargin(balance);
+
         // ═══ 振幅疲劳仪 ═══
         ct.updateRealtimePrice(ethPrice);
         const fatigue = ct.getFatigue();
 
-        // fatigue > 0.7 → 禁止追单 (breakout 模式关闭)
-        if (fatigue > FATIGUE_BLOCK_THRESHOLD && tmConfig.allowBreakout) {
-            // 追单被疲劳仪阻止，只允许反转 (阶段4实装)
-            return null;
+        // fatigue > 0.7 → 禁止追单, 但允许极值反转 (fatigue > 0.9)
+        if (fatigue > FATIGUE_BLOCK_THRESHOLD) {
+            // 只有 fatigue > 0.9 + 价格在极值区域才允许反转
+            if (fatigue > 0.9) {
+                const pricePos = ct.getPricePosition(ethPrice);
+                // Top 10% → SHORT, Bottom 10% → LONG
+                if (pricePos > 0.9 && ALLOW_SHORT) {
+                    this.lastTradeTs = now;
+                    const reason =
+                        `🔄 V80 极值反转SHORT: $${ethPrice.toFixed(2)} | ` +
+                        `疲劳=${(fatigue * 100).toFixed(0)}% | 位置=${(pricePos * 100).toFixed(0)}% | [${tmConfig.mode}]`;
+                    log(reason);
+                    return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+                }
+                if (pricePos < 0.1) {
+                    this.lastTradeTs = now;
+                    const reason =
+                        `🔄 V80 极值反转LONG: $${ethPrice.toFixed(2)} | ` +
+                        `疲劳=${(fatigue * 100).toFixed(0)}% | 位置=${(pricePos * 100).toFixed(0)}% | [${tmConfig.mode}]`;
+                    log(reason);
+                    return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+                }
+            }
+            return null; // fatigue > 0.7 但不在极值 → 不开仓
         }
 
-        // ═══ ANTIFAKE 模式: 19:00-20:30 只做反转 (阶段4实装) ═══
+        // ═══ ANTIFAKE 模式: 19:00-20:30 只做反转 ═══
         if (tmConfig.mode === "ANTIFAKE") {
-            // TODO: 阶段4 实装 Fake-out Reversal 逻辑
-            return null;
+            // 价格突破 15m 高点但量不跟 → SHORT (假突破)
+            const prev15mH = ct.prev15mHigh;
+            const prev15mL = ct.prev15mLow;
+            const breakoutPower = instantVol / Math.max(l1Ask, 0.001);
+
+            if (ethPrice > prev15mH && breakoutPower < 1.5 && ALLOW_SHORT) {
+                this.lastTradeTs = now;
+                const reason =
+                    `🎭 ANTIFAKE SHORT: $${ethPrice.toFixed(2)} > 15mH=$${prev15mH.toFixed(2)} 但量弱=${breakoutPower.toFixed(1)}x | [ANTIFAKE]`;
+                log(reason);
+                return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+            }
+            if (ethPrice < prev15mL && breakoutPower < 1.5) {
+                this.lastTradeTs = now;
+                const reason =
+                    `🎭 ANTIFAKE LONG: $${ethPrice.toFixed(2)} < 15mL=$${prev15mL.toFixed(2)} 但量弱=${breakoutPower.toFixed(1)}x | [ANTIFAKE]`;
+                log(reason);
+                return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
+            }
+            return null; // ANTIFAKE 但没符合假突破条件
         }
 
         // ═══ 不允许追单的模式直接返回 ═══
@@ -94,14 +138,10 @@ export class CausalStrategy {
         const btcSellRatio = btcSell / Math.max(btcBuy, 0.001);
         const btcThreshold = tmConfig.btcThreshold;
 
-        // ═══ 订单流数据 ═══
-        const instantVol = snap.ethInstantVol;
-        const l1Ask = snap.ethL1AskVol;
-        const l1Bid = snap.ethL1BidVol;
+        // ═══ 穿牆狙击前置条件 ═══
         if (instantVol <= 0) return null;
 
         const wallRatio = l1Bid / Math.max(l1Ask, 0.001);
-        const margin = getMargin(balance);
 
         // ═══════════════════════════════════════════════
         // V80.1 入场: 穿牆狙击 (方案 B — 先跑)
