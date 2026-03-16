@@ -199,6 +199,7 @@ class LeviathanBot {
                 s.ethInstantVol,
                 s.ethAvgVol,
                 s.ethLastPrice,
+                this.candles.getFatigue(), // V80.3 因果法则
             );
 
             if (r.closed) {

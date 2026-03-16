@@ -286,19 +286,21 @@ export class BitunixExecutor {
     }
 
     // ═══════════════════════════════════════════════
-    // V80-DEFIANCE — n-of-1 分阶段出场
+    // V80.3 DYNAMIC-STRIKE — 因果出场
     // ═══════════════════════════════════════════════
     async checkPosition(
         currentPrice: number,
         prev15mHigh: number,
         prev15mLow: number,
         last1mClose: number,
-        // V80 订单流数据
+        // 订单流数据
         ethL1AskVol: number = 0,
         ethL1BidVol: number = 0,
         ethInstantVol: number = 0,
         ethAvgVol: number = 1,
         ethLastPrice: number = 0,
+        // V80.3 因果法则
+        fatigue: number = 0,
     ): Promise<{ closed: boolean; reason: string; netPnlU: number; symbol: string }> {
         if (!this.inPosition) return { closed: false, reason: "", netPnlU: 0, symbol: "" };
 
@@ -380,13 +382,20 @@ export class BitunixExecutor {
 
         // ═══ Layer 5: n-of-1 Stage 2 — 15m 结构护卫退出 ═══
         if (!reason && this.stage1Closed) {
-            // LONG: 1m 收盘 < prev15m low → 结构破位出场
-            // SHORT: 1m 收盘 > prev15m high → 结构破位出场
             if (this.positionSide === "long" && last1mClose > 0 && prev15mLow > 0 && last1mClose < prev15mLow) {
                 reason = `🏗️ 15m结构护卫: 1m收=${last1mClose.toFixed(prec.price)} < 15mL=${prev15mLow.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
             }
             if (this.positionSide === "short" && last1mClose > 0 && prev15mHigh > 0 && last1mClose > prev15mHigh) {
                 reason = `🏗️ 15m结构护卫: 1m收=${last1mClose.toFixed(prec.price)} > 15mH=${prev15mHigh.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
+            }
+        }
+
+        // ═══ Layer 6: CEO 因果法则 — 疲劳>90% + 吸能 = 小段结束 ═══
+        if (!reason && fatigue > 0.9 && pnlPt > 0 && ethInstantVol > 0 && ethAvgVol > 0) {
+            const volRatio = ethInstantVol / ethAvgVol + 0.0001;
+            const instantEff = Math.abs(currentPrice - ethLastPrice) / volRatio;
+            if (instantEff < ABSORPTION_EFF_MIN) {
+                reason = `🎯 因果收网: 疲劳=${(fatigue*100).toFixed(0)}%>90% + 吸能=${instantEff.toFixed(3)}<0.15 | +${pnlPt.toFixed(prec.price)}pt — 小段结束,不贪`;
             }
         }
 

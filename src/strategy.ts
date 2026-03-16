@@ -118,6 +118,12 @@ export class CausalStrategy {
         ct.updateRealtimePrice(ethPrice);
         const fatigue = ct.getFatigue();
 
+        // ═══ CEO 因果法则: 低疲劳+强BTC = 大段行情(30+pt) ═══
+        if (fatigue < 0.3 && btcLead >= 15 && !this._defenseMode) {
+            qty = 5.0; // 全速前进
+            log(`🎯 因果法则: 疲劳${(fatigue*100).toFixed(0)}%<30% + BTC=${btcLead.toFixed(1)}x≥15x → 5.0ETH`);
+        }
+
         // fatigue > 0.7 → 极值反转 or 禁开仓
         if (fatigue > FATIGUE_BLOCK_THRESHOLD) {
             if (fatigue > 0.9) {
