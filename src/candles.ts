@@ -39,12 +39,36 @@ export class CandleTracker {
 
     // ═══ 结构性参考线 (公开, 供策略/执行器读取) ═══
     prev15mHigh = 0;
-    prev15mLow = 0;             // 改为 0 (不用 Infinity, 防止显示异常)
-    lowest2_15m = 0;            // 改为 0
+    prev15mLow = 0;
+    lowest2_15m = 0;
     highest2_15m = 0;
     last1mClose = 0;
     last1mHigh = 0;
-    last1mLow = 0;              // 改为 0
+    last1mLow = 0;
+
+    // V80-DEFIANCE: ATR + 趋势
+    private _atr15m = 0;
+    get atr15m(): number { return this._atr15m; }
+
+    /** 最近3根15m是否趋势对齐 (连涨或连跌) */
+    isTrendAligned(): boolean {
+        const c = this._candles15m;
+        if (c.length < 3) return false;
+        const last3 = c.slice(-3);
+        const allUp = last3.every(k => k.close > k.open);
+        const allDown = last3.every(k => k.close < k.open);
+        return allUp || allDown;
+    }
+
+    /** 趋势方向: 1=多头, -1=空头, 0=无 */
+    trendDirection(): number {
+        const c = this._candles15m;
+        if (c.length < 3) return 0;
+        const last3 = c.slice(-3);
+        if (last3.every(k => k.close > k.open)) return 1;
+        if (last3.every(k => k.close < k.open)) return -1;
+        return 0;
+    }
 
     constructor(symbol: string = ETH_SYMBOL) {
         this._symbol = symbol;
@@ -190,6 +214,12 @@ export class CandleTracker {
         }
         this.lowest2_15m = lo === Infinity ? 0 : lo;
         this.highest2_15m = hi;
+
+        // V80-DEFIANCE: ATR_15m = 最近4根15m的平均振幅
+        if (closedCandles.length > 0) {
+            const atrSum = closedCandles.reduce((s, k) => s + (k.high - k.low), 0);
+            this._atr15m = atrSum / closedCandles.length;
+        }
     }
 
     private update1mStructure() {

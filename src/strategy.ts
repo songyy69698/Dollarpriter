@@ -1,8 +1,7 @@
 /**
- * 🧠 V80.1 "FINAL-SENSE" — 自适应时间穿牆狙击
- * ═══════════════════════════════════════════════
- * 时段模式切换 + 振幅疲劳仪 + 穿牆入场
- * SLEEP / ANTIFAKE / TREND / SCALP / TITAN
+ * 🧬 V80-DEFIANCE — n-of-1 自适应穿牆狙击
+ * ═══════════════════════════════════════════
+ * 动态子弹 + ATR 灵敏度 + 时段模式 + 疲劳仪
  */
 
 import type { CausalSnapshot } from "./bitunix-ws";
@@ -14,13 +13,18 @@ import {
     BREAKOUT_POWER_MIN,
     ENTRY_WALL_RATIO_LONG, ENTRY_WALL_RATIO_SHORT,
     FATIGUE_BLOCK_THRESHOLD,
-    getMargin, getTimeMode,
+    getTimeMode,
     type TimeMode,
 } from "./config";
 
 function log(msg: string) {
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
     console.log(`${ts} [strategy] ${msg}`);
+}
+
+/** ATR clamp 工具 */
+function clamp(min: number, val: number, max: number): number {
+    return Math.max(min, Math.min(val, max));
 }
 
 export interface CausalSignal {
@@ -35,12 +39,15 @@ export class CausalStrategy {
     private lastTradeTs = 0;
     private scanCount = 0;
     private _currentMode: TimeMode = "SLEEP";
+    private _defenseMode = false;         // 熔断器
 
     getScanCount(): number { return this.scanCount; }
     get currentMode(): TimeMode { return this._currentMode; }
+    get defenseMode(): boolean { return this._defenseMode; }
+    set defenseMode(v: boolean) { this._defenseMode = v; }
 
     /**
-     * V80.1: 自适应时间穿牆狙击
+     * V80-DEFIANCE: 自适应穿牆狙击
      */
     evaluate(snap: CausalSnapshot, ct: CandleTracker, balance: number): CausalSignal | null {
         this.scanCount++;
@@ -53,7 +60,6 @@ export class CausalStrategy {
         const tmConfig = getTimeMode(utc8Hour, utc8Min);
         this._currentMode = tmConfig.mode;
 
-        // ═══ SLEEP 模式: 03:01-07:59 强制关机 ═══
         if (tmConfig.mode === "SLEEP") return null;
 
         // ═══ 基础检查 ═══
@@ -66,45 +72,76 @@ export class CausalStrategy {
         if (snap.ethSpread > MAX_SPREAD_POINTS) return null;
         if (snap.ethTop3Depth < MIN_DEPTH_ETH) return null;
 
-        // ═══ 订单流数据 (提前声明, 供疲劳/ANTIFAKE 使用) ═══
+        // ═══ 订单流数据 ═══
         const instantVol = snap.ethInstantVol;
         const l1Ask = snap.ethL1AskVol;
         const l1Bid = snap.ethL1BidVol;
-        const margin = getMargin(balance);
+
+        // ═══ ATR 动态灵敏度 ═══
+        const atr = ct.atr15m;
+        const dynamicBtcThreshold = atr > 0
+            ? clamp(5.0, atr * 0.5, 15.0)
+            : tmConfig.btcThreshold;
+
+        // ═══ BTC Lead ═══
+        const btcBuy = snap.btcBuyDelta;
+        const btcSell = snap.btcSellDelta;
+        if (btcBuy + btcSell <= 0) return null;
+        const btcBuyRatio = btcBuy / Math.max(btcSell, 0.001);
+        const btcSellRatio = btcSell / Math.max(btcBuy, 0.001);
+        const btcLead = Math.max(btcBuyRatio, btcSellRatio);
+
+        // ═══ 自适应子弹 (Dynamic Margin) ═══
+        const trendAligned = ct.isTrendAligned();
+        let margin: number;
+        let marginMode: string;
+
+        if (this._defenseMode) {
+            // 熔断器: 防御模式
+            margin = 20;
+            marginMode = "🛡️DEFENSE";
+        } else if (btcLead >= 12 && trendAligned) {
+            margin = 100;
+            marginMode = "🎯SNIPER";
+        } else {
+            margin = 30;
+            marginMode = "⚡SCALP";
+        }
+
+        // 余额安全检查: margin 不超过余额的 25%
+        if (margin > balance * 0.25) margin = Math.floor(balance * 0.25);
+        if (margin < 10) return null; // 余额太低不开
 
         // ═══ 振幅疲劳仪 ═══
         ct.updateRealtimePrice(ethPrice);
         const fatigue = ct.getFatigue();
 
-        // fatigue > 0.7 → 禁止追单, 但允许极值反转 (fatigue > 0.9)
+        // fatigue > 0.7 → 极值反转 or 禁开仓
         if (fatigue > FATIGUE_BLOCK_THRESHOLD) {
-            // 只有 fatigue > 0.9 + 价格在极值区域才允许反转
             if (fatigue > 0.9) {
                 const pricePos = ct.getPricePosition(ethPrice);
-                // Top 10% → SHORT, Bottom 10% → LONG
                 if (pricePos > 0.9 && ALLOW_SHORT) {
                     this.lastTradeTs = now;
                     const reason =
-                        `🔄 V80 极值反转SHORT: $${ethPrice.toFixed(2)} | ` +
-                        `疲劳=${(fatigue * 100).toFixed(0)}% | 位置=${(pricePos * 100).toFixed(0)}% | [${tmConfig.mode}]`;
+                        `🔄 DEFIANCE 极值反转SHORT: $${ethPrice.toFixed(2)} | ` +
+                        `疲劳=${(fatigue * 100).toFixed(0)}% | ${marginMode} M=$${margin}`;
                     log(reason);
                     return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
                 }
                 if (pricePos < 0.1) {
                     this.lastTradeTs = now;
                     const reason =
-                        `🔄 V80 极值反转LONG: $${ethPrice.toFixed(2)} | ` +
-                        `疲劳=${(fatigue * 100).toFixed(0)}% | 位置=${(pricePos * 100).toFixed(0)}% | [${tmConfig.mode}]`;
+                        `🔄 DEFIANCE 极值反转LONG: $${ethPrice.toFixed(2)} | ` +
+                        `疲劳=${(fatigue * 100).toFixed(0)}% | ${marginMode} M=$${margin}`;
                     log(reason);
                     return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
                 }
             }
-            return null; // fatigue > 0.7 但不在极值 → 不开仓
+            return null;
         }
 
-        // ═══ ANTIFAKE 模式: 19:00-20:30 只做反转 ═══
+        // ═══ ANTIFAKE: 假突破反转 ═══
         if (tmConfig.mode === "ANTIFAKE") {
-            // 价格突破 15m 高点但量不跟 → SHORT (假突破)
             const prev15mH = ct.prev15mHigh;
             const prev15mL = ct.prev15mLow;
             const breakoutPower = instantVol / Math.max(l1Ask, 0.001);
@@ -112,53 +149,38 @@ export class CausalStrategy {
             if (ethPrice > prev15mH && breakoutPower < 1.5 && ALLOW_SHORT) {
                 this.lastTradeTs = now;
                 const reason =
-                    `🎭 ANTIFAKE SHORT: $${ethPrice.toFixed(2)} > 15mH=$${prev15mH.toFixed(2)} 但量弱=${breakoutPower.toFixed(1)}x | [ANTIFAKE]`;
+                    `🎭 ANTIFAKE SHORT: $${ethPrice.toFixed(2)} > 15mH 但量弱=${breakoutPower.toFixed(1)}x | ${marginMode} M=$${margin}`;
                 log(reason);
                 return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
             }
             if (ethPrice < prev15mL && breakoutPower < 1.5) {
                 this.lastTradeTs = now;
                 const reason =
-                    `🎭 ANTIFAKE LONG: $${ethPrice.toFixed(2)} < 15mL=$${prev15mL.toFixed(2)} 但量弱=${breakoutPower.toFixed(1)}x | [ANTIFAKE]`;
+                    `🎭 ANTIFAKE LONG: $${ethPrice.toFixed(2)} < 15mL 但量弱=${breakoutPower.toFixed(1)}x | ${marginMode} M=$${margin}`;
                 log(reason);
                 return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
             }
-            return null; // ANTIFAKE 但没符合假突破条件
+            return null;
         }
 
-        // ═══ 不允许追单的模式直接返回 ═══
         if (!tmConfig.allowBreakout) return null;
 
-        // ═══ BTC Lead (使用时段动态门槛) ═══
-        const btcBuy = snap.btcBuyDelta;
-        const btcSell = snap.btcSellDelta;
-        if (btcBuy + btcSell <= 0) return null;
-
-        const btcBuyRatio = btcBuy / Math.max(btcSell, 0.001);
-        const btcSellRatio = btcSell / Math.max(btcBuy, 0.001);
-        const btcThreshold = tmConfig.btcThreshold;
-
-        // ═══ 穿牆狙击前置条件 ═══
+        // ═══ 穿牆入场 (Dynamic BTC Threshold) ═══
         if (instantVol <= 0) return null;
-
         const wallRatio = l1Bid / Math.max(l1Ask, 0.001);
-
-        // ═══════════════════════════════════════════════
-        // V80.1 入场: 穿牆狙击 (方案 B — 先跑)
-        // ═══════════════════════════════════════════════
 
         // --- LONG ---
         const breakoutLong = instantVol / Math.max(l1Ask, 0.001);
         if (
-            btcBuyRatio >= btcThreshold &&
+            btcBuyRatio >= dynamicBtcThreshold &&
             breakoutLong >= BREAKOUT_POWER_MIN &&
             wallRatio > ENTRY_WALL_RATIO_LONG
         ) {
             this.lastTradeTs = now;
             const reason =
-                `🚀 V80 穿牆LONG: $${ethPrice.toFixed(2)} | ` +
-                `突破=${breakoutLong.toFixed(1)}x | BTC=${btcBuyRatio.toFixed(1)}x≥${btcThreshold}x | ` +
-                `牆比=${wallRatio.toFixed(1)} | 疲劳=${(fatigue * 100).toFixed(0)}% | [${tmConfig.mode}]`;
+                `🚀 DEFIANCE穿牆LONG: $${ethPrice.toFixed(2)} | ` +
+                `BTC=${btcBuyRatio.toFixed(1)}x≥${dynamicBtcThreshold.toFixed(1)}x | ` +
+                `${marginMode} M=$${margin} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
             log(reason);
             return { side: "long", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
         }
@@ -167,15 +189,15 @@ export class CausalStrategy {
         const breakoutShort = instantVol / Math.max(l1Bid, 0.001);
         if (
             ALLOW_SHORT &&
-            btcSellRatio >= btcThreshold &&
+            btcSellRatio >= dynamicBtcThreshold &&
             breakoutShort >= BREAKOUT_POWER_MIN &&
             wallRatio < ENTRY_WALL_RATIO_SHORT
         ) {
             this.lastTradeTs = now;
             const reason =
-                `📉 V80 穿牆SHORT: $${ethPrice.toFixed(2)} | ` +
-                `突破=${breakoutShort.toFixed(1)}x | BTC=${btcSellRatio.toFixed(1)}x≥${btcThreshold}x | ` +
-                `牆比=${wallRatio.toFixed(2)} | 疲劳=${(fatigue * 100).toFixed(0)}% | [${tmConfig.mode}]`;
+                `📉 DEFIANCE穿牆SHORT: $${ethPrice.toFixed(2)} | ` +
+                `BTC=${btcSellRatio.toFixed(1)}x≥${dynamicBtcThreshold.toFixed(1)}x | ` +
+                `${marginMode} M=$${margin} | ATR=${atr.toFixed(1)} | [${tmConfig.mode}]`;
             log(reason);
             return { side: "short", price: ethPrice, margin, reason, targetSymbol: ETH_SYMBOL };
         }

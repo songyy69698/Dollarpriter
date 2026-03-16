@@ -46,9 +46,11 @@ export class BitunixExecutor {
 
     tradeLog: any[] = [];
 
-    // V80 状态
+    // V80-DEFIANCE 状态
     zeroRiskTriggered = false;
-    structGuardPrice = 0;          // 当前结构止损线
+    structGuardPrice = 0;
+    stage1Closed = false;          // n-of-1: 已平 30%
+    originalQty = 0;               // 原始数量 (分阶段用)
 
     // 延迟诊断
     lastEntryMs = 0;
@@ -272,7 +274,7 @@ export class BitunixExecutor {
     }
 
     // ═══════════════════════════════════════════════
-    // V80 FINAL-SENSE — 出场逻辑
+    // V80-DEFIANCE — n-of-1 分阶段出场
     // ═══════════════════════════════════════════════
     async checkPosition(
         currentPrice: number,
@@ -330,21 +332,49 @@ export class BitunixExecutor {
             else log("⚠️ Zero-Risk SL 挂单失败!");
         }
 
-        // ═══ Layer 4: V80 DEFIANCE — 吸能 OR 牆压, 任一触发秒平 ═══
-        if (!reason && pnlPt > ABSORPTION_PROFIT_MIN && ethInstantVol > 0 && ethAvgVol > 0) {
-            // 瞬时位移效率: |Δprice| / (vol1s / avgVol)
-            const volRatio = ethInstantVol / ethAvgVol + 0.0001;
-            const instantEff = Math.abs(currentPrice - ethLastPrice) / volRatio;
+        // ═══ Layer 4: n-of-1 Stage 1 — +10pt 平 30%, SL→Entry+1 ═══
+        if (!reason && !this.stage1Closed && pnlPt >= ABSORPTION_PROFIT_MIN) {
+            const closeQty30 = Math.floor(this.positionQty * 0.3 * 10) / 10;
+            if (closeQty30 > 0) {
+                log(`💰 Stage1: +${pnlPt.toFixed(prec.price)}pt ≥ ${ABSORPTION_PROFIT_MIN}pt → 平 30% = ${closeQty30}`);
+                const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
+                const partialData: Record<string, string> = {
+                    symbol: sym,
+                    side: closeSide,
+                    tradeSide: "CLOSE",
+                    orderType: "MARKET",
+                    qty: closeQty30.toFixed(prec.qty),
+                };
+                if (this.positionId) partialData.positionId = this.positionId;
+                const ok = await this.postOrder(partialData);
+                if (ok) {
+                    this.stage1Closed = true;
+                    this.positionQty -= closeQty30;
+                    log(`✅ Stage1 已平 ${closeQty30}, 剩余 ${this.positionQty}`);
 
-            // 反向牆压: LONG看卖牆/买牆, SHORT看买牆/卖牆
-            const wallPressure = this.positionSide === "long"
-                ? ethL1AskVol / Math.max(ethL1BidVol, 0.001)
-                : ethL1BidVol / Math.max(ethL1AskVol, 0.001);
+                    // SL → Entry + 1pt
+                    const newSl = this.positionSide === "long"
+                        ? this.entryPrice + 1.0
+                        : this.entryPrice - 1.0;
+                    if (this.slOrderId) await this.cancelOrder(sym, this.slOrderId);
+                    const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, newSl, prec);
+                    this.currentSlPrice = newSl;
+                    if (slOk) log(`🛡️ Stage1 SL→${newSl.toFixed(prec.price)} (+1pt)`);
+                } else {
+                    log("⚠️ Stage1 部分平仓失败");
+                }
+            }
+        }
 
-            // OR 逻辑: 吸能 或 牆压, 任一即平
-            if (instantEff < ABSORPTION_EFF_MIN || wallPressure > WALL_PRESSURE_EXIT) {
-                const triggerType = instantEff < ABSORPTION_EFF_MIN ? "吸能" : "牆阻";
-                reason = `💰 V80 察覺${triggerType}: 效率=${instantEff.toFixed(3)} 牆压=${wallPressure.toFixed(1)}x +${pnlPt.toFixed(prec.price)}pt — 最高點物理收割`;
+        // ═══ Layer 5: n-of-1 Stage 2 — 15m 结构护卫退出 ═══
+        if (!reason && this.stage1Closed) {
+            // LONG: 1m 收盘 < prev15m low → 结构破位出场
+            // SHORT: 1m 收盘 > prev15m high → 结构破位出场
+            if (this.positionSide === "long" && last1mClose > 0 && prev15mLow > 0 && last1mClose < prev15mLow) {
+                reason = `🏗️ 15m结构护卫: 1m收=${last1mClose.toFixed(prec.price)} < 15mL=${prev15mLow.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
+            }
+            if (this.positionSide === "short" && last1mClose > 0 && prev15mHigh > 0 && last1mClose > prev15mHigh) {
+                reason = `🏗️ 15m结构护卫: 1m收=${last1mClose.toFixed(prec.price)} > 15mH=${prev15mHigh.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
             }
         }
 
@@ -616,6 +646,8 @@ export class BitunixExecutor {
         this.zeroRiskTriggered = false;
         this.structGuardPrice = 0;
         this.highSlippage = false;
+        this.stage1Closed = false;
+        this.originalQty = 0;
     }
 
     private logTrade(reason: string, pnlPt: number, netPnlU: number) {
