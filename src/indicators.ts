@@ -194,6 +194,25 @@ export class IndicatorEngine {
         return atr > 0 ? (last.h - last.l) / atr : 0;
     }
 
+    /**
+     * RSI 变速: 当前RSI - 6根前RSI
+     * 正值=RSI在上升, 负值=RSI在下降
+     * 做多: 负值→RSI跌速放缓/开始回升=动能衰竭 ✅
+     * 做空: 正值→RSI涨速放缓/开始回落=动能衰竭 ✅
+     */
+    getRSISpeed(): number {
+        const c = this.candles5m;
+        if (c.length < RSI_PERIOD + 7) return 0;
+        const rsiNow = this.getRSI();
+        // 计算 6 根前的 RSI
+        const saved = this.candles5m;
+        const sliced = c.slice(0, -6);
+        this.candles5m = sliced;
+        const rsiPrev = this.getRSI();
+        this.candles5m = saved;
+        return rsiNow - rsiPrev;
+    }
+
     // ═══════════════════════════════════════
     // 前 1 小时涨跌幅 (%)
     // ═══════════════════════════════════════
