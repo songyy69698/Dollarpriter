@@ -125,10 +125,11 @@ export class WindowStrategy {
 
         // ═══ 每个窗口双向检查: 多空都看，条件满足哪个做哪个 ═══
 
-        // ─── 做多条件: RSI<30 + VWAP偏下 + 量价非空头确认 ───
-        const longOk = rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN && vpc.direction !== "bearish";
-        // ─── 做空条件: RSI>70 + VWAP偏上 + 量价非多头确认 ───
-        const shortOk = rsi > RSI_OVERBOUGHT && vwapDev > VWAP_DEV_MIN && vpc.direction !== "bullish";
+        // ─── 做多条件: RSI<30 + VWAP偏下 ───
+        const longOk = rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN;
+        // ─── 做空条件: RSI>70 + VWAP偏上 ───
+        const shortOk = rsi > RSI_OVERBOUGHT && vwapDev > VWAP_DEV_MIN;
+        // 量价因果: 仅作为 CEO 参考信息，不过滤入场
 
         if (activeWindow.name === "08窗口") {
             if (longOk && usedRange < RANGE_LOW_THRESHOLD) {
