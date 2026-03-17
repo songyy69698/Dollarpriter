@@ -1,9 +1,9 @@
 /**
- * 🎯 V91 因果套利 + 平衡型出场
+ * 🎯 V91 Mom12冠军策略 — 动量做空 + K棒形态 + 成交量
  * ═══════════════════════════════════════
- * 入场: 买压>卖墙×2.5 + 效率>均值 (实时盘口)
- * 出场: SL12 → 保本10+3 → 跟踪10
- * 核心: 盘口因果edge入场 + 大盈亏比出场
+ * 入场: 12根5m K线动量>40pt + 放量×2 + K棒上影线
+ * 出场: SL8 → 保本5+1 → 跟踪15
+ * 回测: $200→$939 (+$739) | 15笔 | 43%胜率
  */
 
 // ═══════════════════════════════════════
@@ -24,15 +24,21 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 };
 
 // ═══════════════════════════════════════
-// V90 核心参数
+// 核心参数
 // ═══════════════════════════════════════
 export const LEVERAGE = 200;
 export const TAKER_FEE = 0.0004;
+export const MARGIN_PER_TRADE = 50;         // $50/单 (200x=5ETH)
 
 // ═══════════════════════════════════════
-// V90 入场: 时段窗口 + RSI + VWAP + 日振幅
+// Mom12 入场参数 (回测冠军)
 // ═══════════════════════════════════════
-export const ENTRY_QTY = 3.0;              // CEO: 每单 3 ETH
+export const MOM12_THRESHOLD = 40;          // 12根K线动量 > 40pt
+export const VOL_MULTIPLIER = 2.0;          // 成交量 > 均量 × 2
+export const BAR_UPPER_SHADOW_MIN = 0.25;   // 上影线占比 > 25%
+export const BAR_BODY_MAX = 0.65;           // 或 实体占比 < 65%
+export const ATR_BAN_THRESHOLD = 55;        // ATR > 55 禁入 (V50保护)
+export const EMA200_PERIOD = 200;           // EMA200 趋势过滤
 
 export interface WindowConfig {
     name: string;
@@ -42,43 +48,30 @@ export interface WindowConfig {
     endMin: number;
 }
 
-/** CEO 规划的三个交易窗口 (UTC+8) — 多空双向观察 */
+/** CEO 规划的三个交易窗口 (UTC+8) */
 export const TRADE_WINDOWS: WindowConfig[] = [
     { name: "08窗口", startHour: 8, startMin: 0, endHour: 9, endMin: 0 },
     { name: "15窗口", startHour: 15, startMin: 0, endHour: 16, endMin: 0 },
     { name: "22窗口", startHour: 22, startMin: 0, endHour: 23, endMin: 0 },
 ];
 
-// RSI 阈值
-export const RSI_OVERSOLD = 30;             // 超卖 < 30
-export const RSI_OVERBOUGHT = 70;           // 超买 > 70
-export const RSI_PERIOD = 14;
-
-// VWAP 偏离阈值 (%)
-export const VWAP_DEV_MIN = 0.5;            // 偏离 VWAP ≥ 0.5%
-
-// 日振幅阈值
-export const RANGE_LOW_THRESHOLD = 0.5;     // 08:00 做多: 日振已用 < 50%
-export const RANGE_HIGH_THRESHOLD = 0.6;    // 15:00 做空: 日振已用 > 60%
-export const RANGE_FULL_THRESHOLD = 0.7;    // 22:00 做多: 日振已用 > 70%
-
 // ═══════════════════════════════════════
-// V91 出场: 平衡型 (SL12→保本10+3→跟踪10)
+// 出场参数 (回测冠军: SL8→保本5+1→跟踪15)
 // ═══════════════════════════════════════
-export const INITIAL_SL_PT = 12.0;          // 初始止损 12pt (给呼吸空间)
-export const BREAKEVEN_PT = 10.0;           // 浮盈 10pt → 移 SL 到入场+3pt
-export const BREAKEVEN_SL_OFFSET = 3.0;     // 保本后 SL = 入场 + 3pt (锁利)
-export const TRAILING_PT = 10.0;            // 跟踪距离 10pt (让利润跑)
-export const MAX_HOLD_BARS = 60;            // 最长持仓 60 根 5m = 5 小时
+export const INITIAL_SL_PT = 8.0;           // 止损 8pt
+export const BREAKEVEN_PT = 5.0;            // 浮盈 5pt → 移保本
+export const BREAKEVEN_SL_OFFSET = 1.0;     // 保本后 SL = 入场 + 1pt
+export const TRAILING_PT = 15.0;            // 跟踪距离 15pt (让利润跑)
+export const MAX_HOLD_BARS = 60;            // 5小时超时
 
 // ═══════════════════════════════════════
 // 冷却 & 安全
 // ═══════════════════════════════════════
-export const COOLDOWN_MS = 3_600_000;       // 1 小时冷却
-export const MIN_HOLD_MS = 5_000;           // 最少持仓 5s
+export const COOLDOWN_MS = 60_000;          // 1分钟冷却 (同窗口不重复)
+export const MIN_HOLD_MS = 5_000;
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 3;          // 日限 3 单 (每窗口 1 单)
-export const MAX_DAILY_LOSS = 80;           // 3 单全亏 = $72, 留 buffer
+export const MAX_DAILY_TRADES = 3;
+export const MAX_DAILY_LOSS = 80;
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate
@@ -93,8 +86,9 @@ export const CANDLE_LOOKBACK = 4;
 export const CANDLE_POLL_MS = 30_000;
 export const EFFICIENCY_WINDOW = 100;
 export const AVG_VOL_WINDOW = 200;
+export const ENTRY_QTY = 3.0;              // 向后兼容
 
 // ═══════════════════════════════════════
-// Binance API (指标计算用)
+// Binance API (K线数据用)
 // ═══════════════════════════════════════
 export const BINANCE_BASE = "https://api.binance.com";
