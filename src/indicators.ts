@@ -196,21 +196,91 @@ export class IndicatorEngine {
 
     /**
      * RSI 变速: 当前RSI - 6根前RSI
-     * 正值=RSI在上升, 负值=RSI在下降
-     * 做多: 负值→RSI跌速放缓/开始回升=动能衰竭 ✅
-     * 做空: 正值→RSI涨速放缓/开始回落=动能衰竭 ✅
      */
     getRSISpeed(): number {
         const c = this.candles5m;
         if (c.length < RSI_PERIOD + 7) return 0;
         const rsiNow = this.getRSI();
-        // 计算 6 根前的 RSI
         const saved = this.candles5m;
         const sliced = c.slice(0, -6);
         this.candles5m = sliced;
         const rsiPrev = this.getRSI();
         this.candles5m = saved;
         return rsiNow - rsiPrev;
+    }
+
+    /**
+     * RSI 线形分析 — 不只看数字，看"形态"
+     *
+     * 底背离: 价格创近期新低 但 RSI 没创新低 → 强烈反弹信号
+     * 顶背离: 价格创近期新高 但 RSI 没创新高 → 强烈回落信号
+     * 弯头:   RSI 连续3根在回升(底)/回落(顶) → 动能反转
+     */
+    getRSIShape(): {
+        bullishDiv: boolean;  // 底背离
+        bearishDiv: boolean;  // 顶背离
+        rsiCurveUp: boolean;  // RSI 弯头向上 (底部回升)
+        rsiCurveDown: boolean; // RSI 弯头向下 (顶部回落)
+        rsiSlope3: number;    // 最近3根RSI斜率
+        desc: string;         // 人类可读描述
+    } {
+        const c = this.candles5m;
+        const result = {
+            bullishDiv: false, bearishDiv: false,
+            rsiCurveUp: false, rsiCurveDown: false,
+            rsiSlope3: 0, desc: "数据不足",
+        };
+        if (c.length < RSI_PERIOD + 25) return result;
+
+        // 计算最近 24 根 K 线的 RSI 序列 (约2小时)
+        const rsiList: number[] = [];
+        const priceList: number[] = [];
+        const saved = this.candles5m;
+        for (let offset = 23; offset >= 0; offset--) {
+            const sliced = c.slice(0, c.length - offset || undefined);
+            this.candles5m = sliced;
+            rsiList.push(this.getRSI());
+            priceList.push(sliced[sliced.length - 1].c);
+        }
+        this.candles5m = saved;
+
+        const n = rsiList.length;
+
+        // ─── 底背离检测 ───
+        // 价格近6根的最低 < 前12根的最低，但 RSI 近6根的最低 > 前12根的最低
+        const priceLow1 = Math.min(...priceList.slice(0, 12));
+        const priceLow2 = Math.min(...priceList.slice(12));
+        const rsiLow1 = Math.min(...rsiList.slice(0, 12));
+        const rsiLow2 = Math.min(...rsiList.slice(12));
+        if (priceLow2 < priceLow1 && rsiLow2 > rsiLow1) {
+            result.bullishDiv = true;
+        }
+
+        // ─── 顶背离检测 ───
+        const priceHigh1 = Math.max(...priceList.slice(0, 12));
+        const priceHigh2 = Math.max(...priceList.slice(12));
+        const rsiHigh1 = Math.max(...rsiList.slice(0, 12));
+        const rsiHigh2 = Math.max(...rsiList.slice(12));
+        if (priceHigh2 > priceHigh1 && rsiHigh2 < rsiHigh1) {
+            result.bearishDiv = true;
+        }
+
+        // ─── 弯头检测 (最近3根RSI方向) ───
+        const r1 = rsiList[n - 3], r2 = rsiList[n - 2], r3 = rsiList[n - 1];
+        result.rsiSlope3 = r3 - r1;
+        if (r2 > r1 && r3 > r2) result.rsiCurveUp = true;   // 连续回升
+        if (r2 < r1 && r3 < r2) result.rsiCurveDown = true;  // 连续回落
+
+        // ─── 生成描述 ───
+        const parts: string[] = [];
+        if (result.bullishDiv) parts.push("🟢底背离(价新低RSI没新低)");
+        if (result.bearishDiv) parts.push("🔴顶背离(价新高RSI没新高)");
+        if (result.rsiCurveUp) parts.push("📈RSI弯头↑");
+        if (result.rsiCurveDown) parts.push("📉RSI弯头↓");
+        if (!parts.length) parts.push("⚪无特殊形态");
+        result.desc = parts.join(" ");
+
+        return result;
     }
 
     // ═══════════════════════════════════════

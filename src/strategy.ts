@@ -170,12 +170,19 @@ export class WindowStrategy {
         // ═══ Step 2: 等最佳入场时机 ═══
         // 亏损单反思: 赢单实体比=0.58, 亏单=1.04; 赢单RSI减速, 亏单RSI加速
         const isDecelerating = detectedSide === "long"
-            ? rsiSpeed < 0    // 做多: RSI 在回升(从超卖恢复)
-            : rsiSpeed > 0;   // 做空: RSI 在回落(从超买恢复)
-        // 注: 做多时 rsiSpeed<0 代表 RSI 跌速在放缓/开始回升
+            ? rsiSpeed < 0
+            : rsiSpeed > 0;
 
-        const bodySmall = bodyR < 0.8;  // K 线实体变小 = 犹豫 = 将反转
-        const timingGood = bodySmall || isDecelerating;
+        const bodySmall = bodyR < 0.8;
+
+        // RSI 线形分析
+        const rsiShape = indicators.getRSIShape();
+        const rsiConfirm = detectedSide === "long"
+            ? (rsiShape.bullishDiv || rsiShape.rsiCurveUp)   // 做多: 底背离或弯头向上
+            : (rsiShape.bearishDiv || rsiShape.rsiCurveDown); // 做空: 顶背离或弯头向下
+
+        // 精准时机: 满足任一即可 (不错失机会)
+        const timingGood = bodySmall || isDecelerating || rsiConfirm;
 
         // 窗口快结束了 (最后5分钟) → 不再等
         const windowEnd = activeWindow.endHour * 60 + activeWindow.endMin;
@@ -183,15 +190,22 @@ export class WindowStrategy {
         const urgentEntry = minutesLeft <= 5;
 
         if (!timingGood && !urgentEntry) {
-            // 方向对但时机不到 → 继续等
-            if (this.scanCount % 12 === 0) { // 每分钟 log 一次
-                log(`⏳ ${activeWindow.name} ${detectedSide.toUpperCase()} 等待中... 实体比=${bodyR.toFixed(2)} RSI速=${rsiSpeed.toFixed(1)} 剩${minutesLeft}min`);
+            if (this.scanCount % 12 === 0) {
+                log(`⏳ ${activeWindow.name} ${detectedSide.toUpperCase()} 等待中... 实体=${bodyR.toFixed(2)} RSI速=${rsiSpeed.toFixed(1)} RSI形=${rsiShape.desc} 剩${minutesLeft}min`);
             }
             return null;
         }
 
         // ═══ Step 3: 产生信号 ═══
-        const entryType = urgentEntry && !timingGood ? "⏰末班车" : "🎯精准";
+        // 判断精准度等级
+        let precisionScore = 0;
+        if (bodySmall) precisionScore++;
+        if (isDecelerating) precisionScore++;
+        if (rsiConfirm) precisionScore++;
+        const entryType = urgentEntry && !timingGood
+            ? "⏰末班车"
+            : precisionScore >= 3 ? "🎯🎯🎯完美" : precisionScore >= 2 ? "🎯🎯高精" : "🎯精准";
+
         const title = activeWindow.name === "08窗口" ? "🌅 08:00" :
                       activeWindow.name === "15窗口" ? "🌇 15:00" : "🌙 22:00";
 
@@ -206,6 +220,7 @@ export class WindowStrategy {
             `日振=${(usedRange * 100).toFixed(0)}% ✅\n` +
             `实体比=${bodyR.toFixed(2)} ${bodySmall ? "✅小(犹豫)" : "⚠️大(加速)"}\n` +
             `RSI速=${rsiSpeed.toFixed(1)} ${isDecelerating ? "✅减速" : "⚠️加速"}\n` +
+            `RSI形态: ${rsiShape.desc}\n` +
             `量价: ${vpcLabel} 买卖比=${vpc.ratio.toFixed(1)}\n` +
             `前1h=${prev1h > 0 ? "+" : ""}${prev1h.toFixed(2)}% | ATR=${atr.toFixed(1)}pt`;
 
@@ -218,7 +233,7 @@ export class WindowStrategy {
         this.lastWindowSignal = activeWindow.name;
         this._pendingSignal = signal;
         this._ceoApproved = false;
-        log(`📡 ${activeWindow.name} ${detectedSide.toUpperCase()} [${entryType}] → 实体比=${bodyR.toFixed(2)} RSI速=${rsiSpeed.toFixed(1)} → 等待 CEO 确认`);
+        log(`📡 ${activeWindow.name} ${detectedSide.toUpperCase()} [${entryType}] 精准=${precisionScore}/3 RSI形=${rsiShape.desc}`);
 
         return signal;
     }
