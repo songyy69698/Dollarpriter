@@ -120,55 +120,37 @@ export class WindowStrategy {
 
         let signal: WindowSignal | null = null;
 
-        // ═══ 窗口 1: 08:00 做多 ═══
-        if (activeWindow.name === "08做多") {
-            if (rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN && usedRange < RANGE_LOW_THRESHOLD) {
-                const reason =
-                    `🌅 08:00 做多信号\n` +
-                    `RSI=${rsi.toFixed(0)} (<${RSI_OVERSOLD}) ✅\n` +
-                    `VWAP偏=${vwapDev.toFixed(2)}% (<-${VWAP_DEV_MIN}%) ✅\n` +
-                    `日振=${(usedRange * 100).toFixed(0)}% (<${RANGE_LOW_THRESHOLD * 100}%) ✅\n` +
-                    `前1h=${prev1h.toFixed(2)}% | ATR=${atr.toFixed(1)}pt`;
-                signal = {
-                    side: "long", price: currentPrice, qty: ENTRY_QTY,
-                    reason, targetSymbol: ETH_SYMBOL, windowName: activeWindow.name,
-                    indicators: snap,
-                };
+        // ═══ 每个窗口双向检查: 多空都看，条件满足哪个做哪个 ═══
+
+        // ─── 做多条件: RSI<30 + VWAP偏下 ───
+        const longOk = rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN;
+        // ─── 做空条件: RSI>70 + VWAP偏上 ───
+        const shortOk = rsi > RSI_OVERBOUGHT && vwapDev > VWAP_DEV_MIN;
+
+        if (activeWindow.name === "08窗口") {
+            // 08:00 — 日振已用少 → 偏做多(均值回归); 日振已用多 → 可做空(趋势延续)
+            if (longOk && usedRange < RANGE_LOW_THRESHOLD) {
+                signal = this.buildSignal("long", `🌅 08:00 做多`, currentPrice, snap, activeWindow.name);
+            } else if (shortOk && usedRange > RANGE_HIGH_THRESHOLD) {
+                signal = this.buildSignal("short", `🌅 08:00 做空`, currentPrice, snap, activeWindow.name);
             }
         }
 
-        // ═══ 窗口 2: 15:00 做空 ═══
-        if (activeWindow.name === "15做空") {
-            if (rsi > RSI_OVERBOUGHT && vwapDev > VWAP_DEV_MIN && usedRange > RANGE_HIGH_THRESHOLD) {
-                const reason =
-                    `🌇 15:00 做空信号\n` +
-                    `RSI=${rsi.toFixed(0)} (>${RSI_OVERBOUGHT}) ✅\n` +
-                    `VWAP偏=+${vwapDev.toFixed(2)}% (>${VWAP_DEV_MIN}%) ✅\n` +
-                    `日振=${(usedRange * 100).toFixed(0)}% (>${RANGE_HIGH_THRESHOLD * 100}%) ✅\n` +
-                    `前1h=${prev1h.toFixed(2)}% | ATR=${atr.toFixed(1)}pt`;
-                signal = {
-                    side: "short", price: currentPrice, qty: ENTRY_QTY,
-                    reason, targetSymbol: ETH_SYMBOL, windowName: activeWindow.name,
-                    indicators: snap,
-                };
+        if (activeWindow.name === "15窗口") {
+            // 15:00 — 日振已用多 → 偏做空(超涨回落); 日振已用少 → 可做多(低位反弹)
+            if (shortOk && usedRange > RANGE_HIGH_THRESHOLD) {
+                signal = this.buildSignal("short", `🌇 15:00 做空`, currentPrice, snap, activeWindow.name);
+            } else if (longOk && usedRange < RANGE_LOW_THRESHOLD) {
+                signal = this.buildSignal("long", `🌇 15:00 做多`, currentPrice, snap, activeWindow.name);
             }
         }
 
-        // ═══ 窗口 3: 22:00 做多 ═══
-        if (activeWindow.name === "22做多") {
-            if (rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN && usedRange > RANGE_FULL_THRESHOLD && barRR > 1.0) {
-                const reason =
-                    `🌙 22:00 做多信号 (假跌破反弹)\n` +
-                    `RSI=${rsi.toFixed(0)} (<${RSI_OVERSOLD}) ✅\n` +
-                    `VWAP偏=${vwapDev.toFixed(2)}% (<-${VWAP_DEV_MIN}%) ✅\n` +
-                    `日振=${(usedRange * 100).toFixed(0)}% (>${RANGE_FULL_THRESHOLD * 100}%) ✅\n` +
-                    `K线/ATR=${barRR.toFixed(1)}x (>1.0) ✅\n` +
-                    `前1h=${prev1h.toFixed(2)}% | ATR=${atr.toFixed(1)}pt`;
-                signal = {
-                    side: "long", price: currentPrice, qty: ENTRY_QTY,
-                    reason, targetSymbol: ETH_SYMBOL, windowName: activeWindow.name,
-                    indicators: snap,
-                };
+        if (activeWindow.name === "22窗口") {
+            // 22:00 — 全天最大波动窗口，多空都有机会
+            if (longOk && usedRange > RANGE_FULL_THRESHOLD && barRR > 1.0) {
+                signal = this.buildSignal("long", `🌙 22:00 做多(假跌反弹)`, currentPrice, snap, activeWindow.name);
+            } else if (shortOk && usedRange > RANGE_FULL_THRESHOLD && barRR > 1.0) {
+                signal = this.buildSignal("short", `🌙 22:00 做空(假涨反跌)`, currentPrice, snap, activeWindow.name);
             }
         }
 
@@ -176,9 +158,30 @@ export class WindowStrategy {
             this.lastWindowSignal = activeWindow.name;
             this._pendingSignal = signal;
             this._ceoApproved = false;
-            log(`📡 ${signal.windowName} 信号产生 → 等待 CEO 确认`);
+            log(`📡 ${signal.windowName} ${signal.side.toUpperCase()} 信号 → 等待 CEO 确认`);
         }
 
         return signal;
+    }
+
+    /** 构建信号对象 */
+    private buildSignal(
+        side: "long" | "short", title: string,
+        price: number, snap: WindowSignal["indicators"],
+        windowName: string,
+    ): WindowSignal {
+        const { rsi, vwapDev, usedRange, atr, prev1hChange, barRangeRatio } = snap;
+        const sideLabel = side === "long" ? "做多📈" : "做空📉";
+        const reason =
+            `${title} ${sideLabel}\n` +
+            `RSI=${rsi.toFixed(0)} ${side === "long" ? `(<${RSI_OVERSOLD})` : `(>${RSI_OVERBOUGHT})`} ✅\n` +
+            `VWAP偏=${vwapDev > 0 ? "+" : ""}${vwapDev.toFixed(2)}% ✅\n` +
+            `日振=${(usedRange * 100).toFixed(0)}% ✅\n` +
+            `前1h=${prev1hChange > 0 ? "+" : ""}${prev1hChange.toFixed(2)}% | ATR=${atr.toFixed(1)}pt`;
+        return {
+            side, price, qty: ENTRY_QTY,
+            reason, targetSymbol: ETH_SYMBOL, windowName,
+            indicators: snap,
+        };
     }
 }

@@ -41,11 +41,11 @@ export interface WindowConfig {
     endMin: number;
 }
 
-/** CEO 规划的三个交易窗口 (UTC+8) */
+/** CEO 规划的三个交易窗口 (UTC+8) — 多空双向观察 */
 export const TRADE_WINDOWS: WindowConfig[] = [
-    { name: "08做多", startHour: 8, startMin: 0, endHour: 9, endMin: 0 },
-    { name: "15做空", startHour: 15, startMin: 0, endHour: 16, endMin: 0 },
-    { name: "22做多", startHour: 22, startMin: 0, endHour: 23, endMin: 0 },
+    { name: "08窗口", startHour: 8, startMin: 0, endHour: 9, endMin: 0 },
+    { name: "15窗口", startHour: 15, startMin: 0, endHour: 16, endMin: 0 },
+    { name: "22窗口", startHour: 22, startMin: 0, endHour: 23, endMin: 0 },
 ];
 
 // RSI 阈值
