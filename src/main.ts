@@ -1,22 +1,21 @@
 /**
- * 🧬 Dollarprinter V80-DYNAMIC-STRIKE — n-of-1 ADAPTIVE
+ * 🎯 Dollarprinter V90 — 时段窗口策略
  * ═══════════════════════════════════════
- * 自适应子弹 + ATR 动态灵敏度 + 分阶段出场 + 熔断器
- * $400 → $3,500
+ * 三窗口 + CEO确认 + 自动模式
+ * 发信号 → CEO 3分钟内确认→3ETH | 不回→自动2ETH
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
-import { CausalStrategy } from "./strategy";
+import { WindowStrategy } from "./strategy";
 import { BitunixExecutor } from "./executor";
 import { CandleTracker } from "./candles";
+import { IndicatorEngine } from "./indicators";
 import { notifyTG, pollTGCommands } from "./telegram";
 import {
-    LEVERAGE, MARGIN_DEFAULT,
-    SL_POINTS, ZERO_RISK_THRESHOLD,
+    LEVERAGE, ENTRY_QTY,
+    INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
     MAX_DAILY_TRADES, MAX_DAILY_LOSS,
-    BREAKOUT_POWER_MIN,
     ETH_SYMBOL, SYMBOL_PRECISION,
-    getMargin, getTimeMode,
 } from "./config";
 
 function log(msg: string) {
@@ -24,14 +23,17 @@ function log(msg: string) {
     console.log(`${ts} [main] ${msg}`);
 }
 
-// ═══ 熔断器常量 ═══
-const CIRCUIT_BREAKER_BALANCE = 200; // $200 以下才切防御
+// ═══ 自动开单配置 ═══
+const AUTO_QTY = 2.0;             // CEO 不回覆 → 自动 2 ETH
+const CEO_QTY = 3.0;              // CEO 确认 → 3 ETH
+const AUTO_TIMEOUT_MS = 180_000;  // 3 分钟无回覆 → 自动开单
 
-class LeviathanBot {
+class DollarprinterBot {
     private ws: BitunixWSEngine;
-    private strategy: CausalStrategy;
+    private strategy: WindowStrategy;
     private executor: BitunixExecutor;
     private candles: CandleTracker;
+    private indicators: IndicatorEngine;
 
     private paused = true;
     private startTime = Date.now();
@@ -41,6 +43,10 @@ class LeviathanBot {
     private totalPnl = 0;
     private currentBalance = 0;
 
+    // CEO 确认机制
+    private signalSentTs = 0;      // 信号发出时间
+    private signalNotified = false; // 已发 TG 通知
+
     constructor() {
         const apiKey = process.env.BITUNIX_API_KEY || "";
         const secretKey = process.env.BITUNIX_SECRET_KEY || "";
@@ -49,51 +55,40 @@ class LeviathanBot {
             process.exit(1);
         }
         this.ws = new BitunixWSEngine();
-        this.strategy = new CausalStrategy();
+        this.strategy = new WindowStrategy();
         this.executor = new BitunixExecutor(apiKey, secretKey);
         this.candles = new CandleTracker(ETH_SYMBOL);
+        this.indicators = new IndicatorEngine();
     }
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🏁 V80.3 DYNAMIC-STRIKE");
-        log("  🎯 ETH: T1=1.5 T2=3.0 T3=5.0 | MAX=5.0");
-        log("  🛡️ SL=4pt | Stage1=+10pt平30% | 15m结构护卫");
-        log("  ⏳ 60s 启动冷却 防重复开仓");
-        log("  🔒 熔断器: <$200→防御(1 ETH)");
+        log("  🎯 V90 时段窗口策略");
+        log("  📊 三窗口: 08:00做多 | 15:00做空 | 22:00做多");
+        log("  🛡️ SL=8pt → 保本5pt → 跟踪5pt");
+        log("  🤖 CEO确认→3ETH | 不回→自动2ETH");
         log("════════════════════════════════════════════");
 
+        // 预加载数据
         await this.candles.bootstrap();
         await this.candles.bootstrapAmplitude();
         this.candles.start();
+        await this.indicators.bootstrap();
         this.ws.start();
         await this.waitForWS();
 
         const bal = await this.executor.getBalance();
         this.currentBalance = bal;
-        const dt = new Date();
-        const utc8h = (dt.getUTCHours() + 8) % 24;
-        const tmCfg = getTimeMode(utc8h, dt.getUTCMinutes());
-
-        // 启动时检查熔断器
-        if (bal > 0 && bal < CIRCUIT_BREAKER_BALANCE) {
-            this.strategy.defenseMode = true;
-            log("🚨 熔断器激活! 防御模式");
-        }
 
         log(`  💰 余额: $${bal.toFixed(2)}`);
-        log(`  📊 ATR_15m: ${this.candles.atr15m.toFixed(2)}pt`);
-        log(`  📊 1H均幅: ${this.candles.avg1hAmplitude.toFixed(2)}pt`);
-        log(`  🕒 模式: ${tmCfg.mode} | 防御: ${this.strategy.defenseMode ? "🔴ON" : "🟢OFF"}`);
         log("════════════════════════════════════════════");
 
         await notifyTG(
-            `🏁 *V80.3 已启动*\n` +
+            `🎯 *V90 时段窗口启动*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `🕒 *${tmCfg.mode}* | 防御: ${this.strategy.defenseMode ? "🔴ON 1ETH" : "🟢OFF"}\n` +
-            `🎯 T1=1.5 T2=3.0 T3=5.0 ETH | MAX=5\n` +
-            `⏳ 60s启动冷却 防重复开仓\n` +
-            `🛡️ SL=${SL_POINTS}pt | ZR≥${ZERO_RISK_THRESHOLD}pt\n` +
+            `📊 08:00做多 | 15:00做空 | 22:00做多\n` +
+            `🛡️ SL=${INITIAL_SL_PT}pt → 保本${BREAKEVEN_PT}pt → 跟踪${TRAILING_PT}pt\n` +
+            `🤖 确认→${CEO_QTY}ETH | 自动→${AUTO_QTY}ETH\n` +
             `发 *1* 激活`,
         );
 
@@ -113,21 +108,15 @@ class LeviathanBot {
         this.strategyLoop();
         this.positionLoop();
         this.tgCommandLoop();
+        this.indicatorRefreshLoop();
         setInterval(() => this.hourlyReport(), 3600_000);
         setInterval(async () => {
             this.currentBalance = await this.executor.getBalance();
-            // 熔断器: 实时检测
-            if (this.currentBalance > 0 && this.currentBalance < CIRCUIT_BREAKER_BALANCE && !this.strategy.defenseMode) {
-                this.strategy.defenseMode = true;
-                log("🚨 熔断器激活! 余额 < $" + CIRCUIT_BREAKER_BALANCE);
-                await notifyTG(`🚨 *熔断器激活!*\n余额 $${this.currentBalance.toFixed(2)} < $${CIRCUIT_BREAKER_BALANCE}\n自动切换防御模式: M=$20, 更严格入场`);
-            } else if (this.currentBalance >= CIRCUIT_BREAKER_BALANCE + 50 && this.strategy.defenseMode) {
-                this.strategy.defenseMode = false;
-                log("🟢 熔断器解除! 余额恢复");
-                await notifyTG(`🟢 *熔断器解除*\n余额 $${this.currentBalance.toFixed(2)} ≥ $${CIRCUIT_BREAKER_BALANCE + 50}\n恢复正常子弹`);
-            }
-        }, 30_000); // 每30s检测余额
-        log("🟢 V80-DYNAMIC-STRIKE 就绪 — 发 1 激活");
+        }, 30_000);
+        // 每日重置
+        setInterval(() => this.dailyReset(), 60_000);
+
+        log("🟢 V90 就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -141,6 +130,28 @@ class LeviathanBot {
         log("📡 WS 数据流就绪");
     }
 
+    // ═══ 指标定时刷新 (每 5 分钟) ═══
+    private indicatorRefreshLoop() {
+        setInterval(async () => {
+            await this.indicators.refresh();
+        }, 300_000); // 5 分钟
+    }
+
+    // ═══ 每日重置 (UTC+8 00:00) ═══
+    private dailyReset() {
+        const dt = new Date();
+        const utc8h = (dt.getUTCHours() + 8) % 24;
+        const utc8m = dt.getUTCMinutes();
+        if (utc8h === 0 && utc8m === 0) {
+            this.dailyTrades = 0;
+            this.dailyPnl = 0;
+            log("📅 日重置");
+        }
+    }
+
+    // ═══════════════════════════════════════════
+    // 策略循环: 窗口检测 + CEO确认/自动开单
+    // ═══════════════════════════════════════════
     private strategyLoop() {
         setInterval(async () => {
             if (this.paused) return;
@@ -149,58 +160,106 @@ class LeviathanBot {
             if (this.dailyPnl <= -MAX_DAILY_LOSS) return;
 
             const s = this.ws.getSnapshot();
-            this.candles.updateRealtimePrice(s.ethPrice);
+            const ethPrice = s.ethPrice;
+            if (ethPrice <= 0 || !s.connected) return;
 
-            const sig = this.strategy.evaluate(s, this.candles, this.currentBalance);
-            if (!sig) return;
+            this.candles.updateRealtimePrice(ethPrice);
 
-            const prec = SYMBOL_PRECISION[sig.targetSymbol] || { qty: 1, price: 3 };
-            const coinName = sig.targetSymbol.replace("USDT", "");
+            // 检查是否有待确认的信号
+            const pending = this.strategy.pendingSignal;
+            if (pending) {
+                const now = Date.now();
 
-            await notifyTG(
-                `🏁 *${sig.side.toUpperCase()} ${coinName}*\n${sig.reason}\n` +
-                `@ ${sig.price.toFixed(prec.price)} | ${sig.qty}ETH`,
-            );
-
-            const ok = await this.executor.atomicEntry(sig.side, sig.price, sig.qty, sig.targetSymbol, notifyTG);
-            if (ok) {
-                log(`✅ ${sig.side.toUpperCase()} ${sig.qty} ${coinName} @ ${sig.price.toFixed(prec.price)}`);
-                let diagMsg =
-                    `📡 *订单诊断*\n` +
-                    `⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n` +
-                    `[DRIFT] Signal: ${this.executor.signalPrice.toFixed(prec.price)} | Fill: ${this.executor.entryPrice.toFixed(prec.price)} | Slip: ${this.executor.lastSlippage.toFixed(prec.price)}pt`;
-                if (this.executor.highSlippage) {
-                    diagMsg += `\n🚨 *HIGH SLIPPAGE*`;
+                // CEO 已确认 → 用 3 ETH 开单
+                if (this.strategy.ceoApproved) {
+                    log(`✅ CEO 确认! 用 ${CEO_QTY} ETH 开单`);
+                    await this.executeEntry(pending.side, ethPrice, CEO_QTY);
+                    this.strategy.markTraded();
+                    return;
                 }
-                await notifyTG(diagMsg);
-                await Bun.sleep(500);
-                await this.executor.syncPositions();
+
+                // 已发通知但未确认 → 检查超时
+                if (this.signalNotified && now - this.signalSentTs >= AUTO_TIMEOUT_MS) {
+                    log(`⏰ 3分钟未回覆 → 自动用 ${AUTO_QTY} ETH 开单`);
+                    await notifyTG(`⏰ *3分钟未确认 → 自动开单 ${AUTO_QTY}ETH*`);
+                    await this.executeEntry(pending.side, ethPrice, AUTO_QTY);
+                    this.strategy.markTraded();
+                    return;
+                }
+
+                // 已有信号但还没发通知
+                if (!this.signalNotified) {
+                    await this.sendSignalNotification(pending);
+                    this.signalSentTs = Date.now();
+                    this.signalNotified = true;
+                }
+
+                return; // 等待中,不产生新信号
             }
-        }, 500);
+
+            // 没有待确认信号 → 评估新信号
+            this.signalNotified = false;
+            const sig = this.strategy.evaluate(ethPrice, this.indicators);
+            // signal 已存储在 strategy.pendingSignal 中
+
+        }, 5000); // 5 秒检查一次 (5m K 线不需要太频繁)
     }
 
+    /** 发送信号通知到 Telegram */
+    private async sendSignalNotification(sig: WindowSignal) {
+        const { rsi, vwapDev, usedRange, atr, prev1hChange, barRangeRatio } = sig.indicators;
+        const msg =
+            `🎯 *${sig.windowName} 信号*\n` +
+            `──────────────\n` +
+            `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
+            `价格: $${sig.price.toFixed(2)}\n` +
+            `──────────────\n` +
+            `RSI: ${rsi.toFixed(0)} ${rsi < 30 ? "✅超卖" : rsi > 70 ? "✅超买" : "⚠️"}\n` +
+            `VWAP偏: ${vwapDev > 0 ? "+" : ""}${vwapDev.toFixed(2)}% ✅\n` +
+            `日振幅: ${(usedRange * 100).toFixed(0)}% ✅\n` +
+            `前1h: ${prev1hChange > 0 ? "+" : ""}${prev1hChange.toFixed(2)}%\n` +
+            `ATR: ${atr.toFixed(1)}pt\n` +
+            `──────────────\n` +
+            `回覆 *y* → ${CEO_QTY}ETH 开单\n` +
+            `3分钟不回 → 自动${AUTO_QTY}ETH`;
+        await notifyTG(msg);
+    }
+
+    /** 执行入场 */
+    private async executeEntry(side: "long" | "short", price: number, qty: number) {
+        const prec = SYMBOL_PRECISION[ETH_SYMBOL] || { qty: 3, price: 2 };
+
+        await notifyTG(
+            `🏁 *${side.toUpperCase()} ETH*\n` +
+            `@ $${price.toFixed(prec.price)} | ${qty}ETH`,
+        );
+
+        const ok = await this.executor.atomicEntry(side, price, qty, ETH_SYMBOL, notifyTG);
+        if (ok) {
+            log(`✅ ${side.toUpperCase()} ${qty} ETH @ ${price.toFixed(prec.price)}`);
+            const diagMsg =
+                `📡 *订单诊断*\n` +
+                `⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\n` +
+                `Slip: ${this.executor.lastSlippage.toFixed(prec.price)}pt` +
+                (this.executor.highSlippage ? `\n🚨 *HIGH SLIPPAGE*` : "");
+            await notifyTG(diagMsg);
+            await Bun.sleep(500);
+            await this.executor.syncPositions();
+        }
+    }
+
+    // ═══ 仓位管理循环 ═══
     private positionLoop() {
         setInterval(async () => {
             if (!this.executor.inPosition) return;
 
             const s = this.ws.getSnapshot();
-            const currentPrice = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
+            const currentPrice = s.ethPrice;
             if (currentPrice <= 0) return;
 
-            this.candles.updateRealtimePrice(s.ethPrice);
+            this.candles.updateRealtimePrice(currentPrice);
 
-            const r = await this.executor.checkPosition(
-                currentPrice,
-                this.candles.prev15mHigh,
-                this.candles.prev15mLow,
-                this.candles.last1mClose,
-                s.ethL1AskVol,
-                s.ethL1BidVol,
-                s.ethInstantVol,
-                s.ethAvgVol,
-                s.ethLastPrice,
-                this.candles.getFatigue(), // V80.3 因果法则
-            );
+            const r = await this.executor.checkPosition(currentPrice);
 
             if (r.closed) {
                 this.dailyTrades++;
@@ -209,7 +268,7 @@ class LeviathanBot {
                 this.totalPnl += r.netPnlU;
                 const emoji = r.netPnlU > 0 ? "✅" : "❌";
                 await notifyTG(
-                    `${emoji} *${r.symbol.replace("USDT", "")} 平仓*\n` +
+                    `${emoji} *ETH 平仓*\n` +
                     `${r.reason}\n` +
                     `净PnL: ${r.netPnlU >= 0 ? "+" : ""}${r.netPnlU.toFixed(2)}U\n` +
                     `今日: ${this.dailyTrades}单 ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(2)}U`,
@@ -220,22 +279,48 @@ class LeviathanBot {
         }, 1000);
     }
 
+    // ═══ Telegram 指令 ═══
     private tgCommandLoop() {
         let lastId = 0;
         setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *DYNAMIC-STRIKE 激活* [${this.strategy.currentMode}] ${this.strategy.defenseMode ? "🛡️防御" : "🧬进攻"}`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *DYNAMIC-STRIKE 激活* [${this.strategy.currentMode}]`); },
-                "0": async () => { this.paused = true; await notifyTG("🔴 *DYNAMIC-STRIKE 暂停*"); },
-                "/stop": async () => { this.paused = true; await notifyTG("🔴 *DYNAMIC-STRIKE 暂停*"); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V90 激活* 三窗口运行中`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V90 激活*`); },
+                "0": async () => { this.paused = true; await notifyTG("🔴 *V90 暂停*"); },
+                "/stop": async () => { this.paused = true; await notifyTG("🔴 *V90 暂停*"); },
+                // CEO 确认开单
+                "y": async () => {
+                    if (this.strategy.pendingSignal) {
+                        this.strategy.approveTrade();
+                        await notifyTG(`✅ *收到确认! ${CEO_QTY}ETH 即将开单*`);
+                    } else {
+                        await notifyTG("⚠️ 无待确认信号");
+                    }
+                },
+                "yes": async () => {
+                    if (this.strategy.pendingSignal) {
+                        this.strategy.approveTrade();
+                        await notifyTG(`✅ *收到确认! ${CEO_QTY}ETH 即将开单*`);
+                    } else {
+                        await notifyTG("⚠️ 无待确认信号");
+                    }
+                },
+                // CEO 拒绝
+                "n": async () => {
+                    this.strategy.clearPending();
+                    this.signalNotified = false;
+                    await notifyTG("🚫 *信号已跳过*");
+                },
+                "no": async () => {
+                    this.strategy.clearPending();
+                    this.signalNotified = false;
+                    await notifyTG("🚫 *信号已跳过*");
+                },
                 s: async () => { await this.sendStatus(); },
                 "/status": async () => { await this.sendStatus(); },
-                d: async () => { await this.sendDiagnostics(); },
-                "/diag": async () => { await this.sendDiagnostics(); },
                 x: async () => {
                     const s = this.ws.getSnapshot();
-                    const price = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
-                    const r = await this.executor.forceCloseAll(price);
+                    const r = await this.executor.forceCloseAll(s.ethPrice);
                     if (r.ok) {
                         this.dailyTrades++; this.dailyPnl += r.netPnlU;
                         this.totalTrades++; this.totalPnl += r.netPnlU;
@@ -244,48 +329,17 @@ class LeviathanBot {
                 },
                 "/close": async () => {
                     const s = this.ws.getSnapshot();
-                    const price = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
-                    const r = await this.executor.forceCloseAll(price);
+                    const r = await this.executor.forceCloseAll(s.ethPrice);
                     if (r.ok) {
                         this.dailyTrades++; this.dailyPnl += r.netPnlU;
                         this.totalTrades++; this.totalPnl += r.netPnlU;
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                h: async () => { await notifyTG(`📖 *DYNAMIC-STRIKE*\n1 激活\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`); },
-                "/help": async () => { await notifyTG(`📖 *DYNAMIC-STRIKE*\n1 激活\n0 暂停\ns 状态\nd 诊断\nx 强平\nh 帮助`); },
+                h: async () => { await notifyTG(`📖 *V90*\n1 激活\n0 暂停\ny 确认开单\nn 跳过\ns 状态\nx 强平\nh 帮助`); },
+                "/help": async () => { await notifyTG(`📖 *V90*\n1 激活\n0 暂停\ny 确认开单\nn 跳过\ns 状态\nx 强平\nh 帮助`); },
             });
         }, 2000);
-    }
-
-    private async sendDiagnostics() {
-        const s = this.ws.getSnapshot();
-        const dt = new Date();
-        const utc8h = (dt.getUTCHours() + 8) % 24;
-        const tmCfg = getTimeMode(utc8h, dt.getUTCMinutes());
-        const fatigue = this.candles.getFatigue();
-        const cSnap = this.candles.getSnapshot();
-        const atr = this.candles.atr15m;
-
-        let m = `📡 *【DYNAMIC-STRIKE 诊断】*\n──────────────\n`;
-        m += `🧬 防御: ${this.strategy.defenseMode ? "🔴ON $20" : "🟢OFF 动态"}\n`;
-        m += `🕒 *${tmCfg.mode}* | ATR=${atr.toFixed(1)}pt\n`;
-        m += `📊 疲劳: ${(fatigue * 100).toFixed(0)}%`;
-        if (fatigue > 0.9) m += ` 🔴`;
-        else if (fatigue > 0.7) m += ` 🟡`;
-        else m += ` 🟢`;
-        m += ` | 趋势: ${this.candles.isTrendAligned() ? "✅对齐" : "❌无"}\n`;
-        m += `   1H均幅=${cSnap.avg1hAmplitude.toFixed(1)}pt | 当前=${(cSnap.currentHourHigh - cSnap.currentHourLow).toFixed(1)}pt\n`;
-        m += `──────────────\n`;
-        m += `🔨 賣牆=${s.ethL1AskVol.toFixed(1)} 買牆=${s.ethL1BidVol.toFixed(1)} 瞬=${s.ethInstantVol.toFixed(1)}\n`;
-        m += `   牆比=${(s.ethL1BidVol / Math.max(s.ethL1AskVol, 0.001)).toFixed(2)}\n`;
-        const btcR = s.btcBuyDelta / Math.max(s.btcSellDelta, 0.001);
-        m += `₿ 買=${s.btcBuyDelta.toFixed(1)} 賣=${s.btcSellDelta.toFixed(1)} 比=${btcR.toFixed(1)}x\n`;
-        if (this.executor.inPosition) {
-            m += `──────────────\n`;
-            m += `🛡️ ZR:${this.executor.zeroRiskTriggered ? "✅" : "❌"} Stage1:${this.executor.stage1Closed ? "✅30%已平" : "❌待触发"}\n`;
-        }
-        await notifyTG(m);
     }
 
     private async sendStatus() {
@@ -295,31 +349,30 @@ class LeviathanBot {
         const uptimeMs = Date.now() - this.startTime;
         const uptimeH = Math.floor(uptimeMs / 3600_000);
         const uptimeM = Math.floor((uptimeMs % 3600_000) / 60_000);
+
         const dt = new Date();
         const utc8h = (dt.getUTCHours() + 8) % 24;
-        const tmCfg = getTimeMode(utc8h, dt.getUTCMinutes());
-        const fatigue = this.candles.getFatigue();
 
-        let m = `🧬 *DYNAMIC-STRIKE*\n──────────────\n`;
-        m += `💰 $${b.toFixed(2)} | ${this.strategy.defenseMode ? "🛡️防御" : "🧬进攻"}\n`;
-        m += `${s.connected ? "🟢" : "🔴"} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${uptimeH}h${uptimeM}m\n`;
+        const snap = this.indicators.getSnapshot(s.ethPrice);
+
+        let m = `🎯 *V90 时段窗口*\n──────────────\n`;
+        m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${uptimeH}h${uptimeM}m\n`;
         m += `──────────────\n`;
-        m += `🕒 *${tmCfg.mode}* | ATR=${this.candles.atr15m.toFixed(1)}pt\n`;
-        m += `📊 疲劳:${(fatigue * 100).toFixed(0)}% | 趋势:${this.candles.isTrendAligned() ? "✅" : "❌"}\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
+        m += `📊 RSI=${snap.rsi.toFixed(0)} | VWAP偏=${snap.vwapDev > 0 ? "+" : ""}${snap.vwapDev.toFixed(2)}%\n`;
+        m += `📊 日振=${(snap.usedRange * 100).toFixed(0)}% | ATR=${snap.atr.toFixed(1)}pt\n`;
         m += `──────────────\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
         m += `📋 累:${this.totalTrades}单 ${this.totalPnl >= 0 ? "+" : ""}${this.totalPnl.toFixed(1)}U\n`;
 
         if (this.executor.inPosition) {
             const prec = SYMBOL_PRECISION[this.executor.positionSymbol] || { qty: 1, price: 3 };
-            const curPrice = this.executor.positionSymbol === ETH_SYMBOL ? s.ethPrice : s.price;
             const pnl = this.executor.positionSide === "long"
-                ? curPrice - this.executor.entryPrice : this.executor.entryPrice - curPrice;
-            const coinName = this.executor.positionSymbol.replace("USDT", "");
+                ? s.ethPrice - this.executor.entryPrice : this.executor.entryPrice - s.ethPrice;
             m += `──────────────\n`;
-            m += `🔥 ${coinName} ${this.executor.positionSide.toUpperCase()} @ $${this.executor.entryPrice.toFixed(prec.price)}\n`;
-            m += `浮盈:${pnl >= 0 ? "+" : ""}${pnl.toFixed(prec.price)}pt | Stage1:${this.executor.stage1Closed ? "✅" : "❌"}\n`;
+            m += `🔥 ETH ${this.executor.positionSide.toUpperCase()} @ $${this.executor.entryPrice.toFixed(prec.price)}\n`;
+            m += `浮盈:${pnl >= 0 ? "+" : ""}${pnl.toFixed(prec.price)}pt | 保本:${this.executor.breakevenTriggered ? "✅" : "❌"}\n`;
+            m += `最优:+${this.executor.bestProfitPt.toFixed(1)}pt\n`;
         }
 
         await notifyTG(m);
@@ -330,18 +383,20 @@ class LeviathanBot {
         const b = await this.executor.getBalance();
         const uptimeMs = Date.now() - this.startTime;
         const uptimeH = Math.floor(uptimeMs / 3600_000);
-        const fatigue = this.candles.getFatigue();
 
-        let m = `💓 *DYNAMIC-STRIKE* ${uptimeH}h | ${this.paused ? "🔴" : "🟢"} | [${this.strategy.currentMode}]\n`;
-        m += `ETH $${s.ethPrice.toFixed(2)} | ATR=${this.candles.atr15m.toFixed(1)}pt\n`;
-        m += `疲劳:${(fatigue * 100).toFixed(0)}% | 趋势:${this.candles.isTrendAligned() ? "✅" : "❌"}\n`;
-        m += `余$${b.toFixed(2)} | ${this.strategy.defenseMode ? "🛡️防御" : "🧬进攻"}\n`;
-        m += `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`;
+        const snap = this.indicators.getSnapshot(s.ethPrice);
+
+        let m = `💓 *V90* ${uptimeH}h | ${this.paused ? "🔴" : "🟢"}\n`;
+        m += `ETH $${s.ethPrice.toFixed(2)} | RSI=${snap.rsi.toFixed(0)} | 日振=${(snap.usedRange * 100).toFixed(0)}%\n`;
+        m += `余$${b.toFixed(2)} | 今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`;
 
         await notifyTG(m);
     }
 }
 
-const bot = new LeviathanBot();
+// 需要导入 WindowSignal type
+import type { WindowSignal } from "./strategy";
+
+const bot = new DollarprinterBot();
 process.on("SIGINT", () => { log("🛑 停止..."); process.exit(0); });
 bot.start();

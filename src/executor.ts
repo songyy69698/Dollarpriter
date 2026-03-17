@@ -1,25 +1,20 @@
 /**
- * ⚡ Bitunix 执行器 — V80 "FINAL-SENSE"
+ * ⚡ Bitunix 执行器 — V90 混合止盈
  * ═══════════════════════════════════════════
- * MARKET 入场 (IOC) + 穿牆狙击出场
- * 硬止损 4pt → Zero-Risk 6pt → 吸能止盈 → 牆压止盈
+ * MARKET 入场 + SL→保本→跟踪 出场
  */
 
 import {
     BITUNIX_BASE, SYMBOL, ETH_SYMBOL, LEVERAGE,
-    SL_POINTS, TAKER_FEE, SYMBOL_PRECISION,
-    ZERO_RISK_THRESHOLD, ZERO_RISK_SL_OFFSET,
-    ABSORPTION_EFF_MIN, ABSORPTION_WALL_PRESS, ABSORPTION_PROFIT_MIN,
-    WALL_PRESSURE_EXIT, WALL_PRESSURE_PROFIT_MIN,
-    MIN_HOLD_MS, AVG_VOL_WINDOW,
+    INITIAL_SL_PT, BREAKEVEN_PT, BREAKEVEN_SL_OFFSET, TRAILING_PT,
+    TAKER_FEE, SYMBOL_PRECISION,
+    MIN_HOLD_MS,
 } from "./config";
 
 function log(msg: string) {
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
     console.log(`${ts} [executor] ${msg}`);
 }
-
-const FEE_SHIELD_PT = 6.0;  // FEE_SHIELD: PnL < 6pt 禁止吸能/牆压出场
 
 function genOrderTag(): string {
     return `D66_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -48,11 +43,9 @@ export class BitunixExecutor {
 
     tradeLog: any[] = [];
 
-    // V80-DEFIANCE 状态
-    zeroRiskTriggered = false;
-    structGuardPrice = 0;
-    stage1Closed = false;          // n-of-1: 已平 30%
-    originalQty = 0;               // 原始数量 (分阶段用)
+    // V90 混合止盈状态
+    breakevenTriggered = false;    // 保本线已触发
+    bestProfitPt = 0;             // 最大浮盈 (pt)
 
     // 延迟诊断
     lastEntryMs = 0;
@@ -200,7 +193,7 @@ export class BitunixExecutor {
         await this.setupTradeEnv(targetSymbol);
 
         const tag = genOrderTag();
-        log(`🏁 [V80.3] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)}`);
+        log(`🏁 [V90] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)}`);
 
         const orderData: Record<string, string> = {
             symbol: targetSymbol,
@@ -247,15 +240,15 @@ export class BitunixExecutor {
         this.positionSymbol = targetSymbol;
         this.entryPrice = actualPrice;
         this.positionQty = actualQty;
-        this.originalQty = actualQty;
         this.entryTs = Date.now();
         this.orderTag = tag;
-        this.zeroRiskTriggered = false;
+        this.breakevenTriggered = false;
+        this.bestProfitPt = 0;
 
-        // Atomic SL — 4pt STOP_MARKET
+        // Atomic SL — 8pt STOP_MARKET
         const slPrice = side === "long"
-            ? actualPrice - SL_POINTS
-            : actualPrice + SL_POINTS;
+            ? actualPrice - INITIAL_SL_PT
+            : actualPrice + INITIAL_SL_PT;
         this.currentSlPrice = slPrice;
 
         const slT0 = performance.now();
@@ -264,7 +257,7 @@ export class BitunixExecutor {
         );
         this.lastSlMs = Math.round(performance.now() - slT0);
 
-        if (slOk) log(`🛡️ SL: ${slPrice.toFixed(prec.price)} (-${SL_POINTS}pt) [${this.lastSlMs}ms]`);
+        if (slOk) log(`🛡️ SL: ${slPrice.toFixed(prec.price)} (-${INITIAL_SL_PT}pt) [${this.lastSlMs}ms]`);
         else log("⚠️ SL 挂单失败!");
 
         // ═══ 3. SL Watchdog: 500ms 内确认 SL 存在 ═══
@@ -301,8 +294,8 @@ export class BitunixExecutor {
                 log(`🚨 Watchdog: 500ms内未发现SL! 重试挂单...`);
                 const closeSide = side === "long" ? "SELL" : "BUY";
                 const slPrice = side === "long"
-                    ? entryPrice - SL_POINTS
-                    : entryPrice + SL_POINTS;
+                    ? entryPrice - INITIAL_SL_PT
+                    : entryPrice + INITIAL_SL_PT;
                 const retryOk = await this.placeStopMarket(sym, closeSide, qty, slPrice, prec);
                 if (retryOk) {
                     log(`✅ Watchdog: SL 重试成功`);
@@ -342,21 +335,10 @@ export class BitunixExecutor {
     }
 
     // ═══════════════════════════════════════════════
-    // V80.3 DYNAMIC-STRIKE — 因果出场
+    // V90 混合出场: SL → 保本 → 跟踪
     // ═══════════════════════════════════════════════
     async checkPosition(
         currentPrice: number,
-        prev15mHigh: number,
-        prev15mLow: number,
-        last1mClose: number,
-        // 订单流数据
-        ethL1AskVol: number = 0,
-        ethL1BidVol: number = 0,
-        ethInstantVol: number = 0,
-        ethAvgVol: number = 1,
-        ethLastPrice: number = 0,
-        // V80.3 因果法则
-        fatigue: number = 0,
     ): Promise<{ closed: boolean; reason: string; netPnlU: number; symbol: string }> {
         if (!this.inPosition) return { closed: false, reason: "", netPnlU: 0, symbol: "" };
 
@@ -370,91 +352,67 @@ export class BitunixExecutor {
         const elapsed = Date.now() - this.entryTs;
         let reason = "";
 
-        // ═══ Layer 1: 硬止损 — 永远有效, 4pt (强平前触发) ═══
-        if (pnlPt <= -SL_POINTS) {
-            reason = `📉 硬止损: ${pnlPt.toFixed(prec.price)}pt (SL=${SL_POINTS}pt)`;
+        // 更新最大浮盈
+        if (pnlPt > this.bestProfitPt) this.bestProfitPt = pnlPt;
+
+        // ═══ Layer 1: 硬止损 — 8pt ═══
+        if (pnlPt <= -INITIAL_SL_PT) {
+            reason = `📉 硬止损: ${pnlPt.toFixed(prec.price)}pt (SL=${INITIAL_SL_PT}pt)`;
         }
 
-        // ═══ 最短持仓 30s（硬止损除外）═══
+        // ═══ 最短持仓 5s（硬止损除外）═══
         if (!reason && elapsed < MIN_HOLD_MS) {
             return { closed: false, reason: "", netPnlU: 0, symbol: "" };
         }
 
-        // ═══ Layer 2: 高滑点激进出场 — BE+1pt ═══
-        if (!reason && this.highSlippage && pnlPt >= 1.0) {
-            reason = `🚨 高滑点激进出场 [Slip=${this.lastSlippage.toFixed(2)}pt]: BE+${pnlPt.toFixed(prec.price)}pt`;
-        }
-
-        // ═══ Layer 3: Zero-Risk Gate — 6pt 保本 ═══
-        if (!reason && !this.zeroRiskTriggered && pnlPt >= ZERO_RISK_THRESHOLD) {
-            this.zeroRiskTriggered = true;
+        // ═══ Layer 2: 保本线 — 浮盈≥5pt → SL移到入场+1pt ═══
+        if (!reason && !this.breakevenTriggered && pnlPt >= BREAKEVEN_PT) {
+            this.breakevenTriggered = true;
             const newSl = this.positionSide === "long"
-                ? this.entryPrice + ZERO_RISK_SL_OFFSET
-                : this.entryPrice - ZERO_RISK_SL_OFFSET;
+                ? this.entryPrice + BREAKEVEN_SL_OFFSET
+                : this.entryPrice - BREAKEVEN_SL_OFFSET;
 
-            log(`🛡️ Zero-Risk 触发! +${pnlPt.toFixed(prec.price)}pt ≥ ${ZERO_RISK_THRESHOLD}pt → SL→${newSl.toFixed(prec.price)}`);
+            log(`🛡️ 保本触发! +${pnlPt.toFixed(prec.price)}pt ≥ ${BREAKEVEN_PT}pt → SL→${newSl.toFixed(prec.price)}`);
 
             if (this.slOrderId) await this.cancelOrder(sym, this.slOrderId);
             const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
             const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, newSl, prec);
             this.currentSlPrice = newSl;
-            if (slOk) log(`✅ Zero-Risk SL: ${newSl.toFixed(prec.price)}`);
-            else log("⚠️ Zero-Risk SL 挂单失败!");
+            if (slOk) log(`✅ 保本 SL: ${newSl.toFixed(prec.price)}`);
+            else log("⚠️ 保本 SL 挂单失败!");
         }
 
-        // ═══ Layer 4: Stage 1 — +6pt 平 30%, SL→Entry+1 ═══
-        // FEE_SHIELD: pnlPt >= 6 才允许
-        if (!reason && !this.stage1Closed && pnlPt >= FEE_SHIELD_PT) {
-            const closeQty30 = Math.floor(this.positionQty * 0.3 * 10) / 10;
-            if (closeQty30 > 0) {
-                log(`💰 Stage1: +${pnlPt.toFixed(prec.price)}pt ≥ ${ABSORPTION_PROFIT_MIN}pt → 平 30% = ${closeQty30}`);
+        // ═══ Layer 3: 跟踪止盈 — 保本后，SL = 最优浮盈 - 5pt ═══
+        if (!reason && this.breakevenTriggered && this.bestProfitPt > BREAKEVEN_PT) {
+            const trailSl = this.positionSide === "long"
+                ? this.entryPrice + this.bestProfitPt - TRAILING_PT
+                : this.entryPrice - this.bestProfitPt + TRAILING_PT;
+
+            // 只向有利方向移动 SL
+            const shouldUpdate = this.positionSide === "long"
+                ? trailSl > this.currentSlPrice
+                : trailSl < this.currentSlPrice;
+
+            if (shouldUpdate) {
+                log(`📈 跟踪移动: 最优+${this.bestProfitPt.toFixed(1)}pt → SL=${trailSl.toFixed(prec.price)}`);
+                if (this.slOrderId) await this.cancelOrder(sym, this.slOrderId);
                 const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
-                const partialData: Record<string, string> = {
-                    symbol: sym,
-                    side: closeSide,
-                    tradeSide: "CLOSE",
-                    orderType: "MARKET",
-                    qty: closeQty30.toFixed(prec.qty),
-                };
-                if (this.positionId) partialData.positionId = this.positionId;
-                const ok = await this.postOrder(partialData);
-                if (ok) {
-                    this.stage1Closed = true;
-                    this.positionQty -= closeQty30;
-                    log(`✅ Stage1 已平 ${closeQty30}, 剩余 ${this.positionQty}`);
+                const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, trailSl, prec);
+                if (slOk) this.currentSlPrice = trailSl;
+            }
 
-                    // SL → Entry + 1pt
-                    const newSl = this.positionSide === "long"
-                        ? this.entryPrice + 1.0
-                        : this.entryPrice - 1.0;
-                    if (this.slOrderId) await this.cancelOrder(sym, this.slOrderId);
-                    const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, newSl, prec);
-                    this.currentSlPrice = newSl;
-                    if (slOk) log(`🛡️ Stage1 SL→${newSl.toFixed(prec.price)} (+1pt)`);
-                } else {
-                    log("⚠️ Stage1 部分平仓失败");
-                }
+            // 如果跌破跟踪 SL → 平仓
+            if (this.positionSide === "long" && currentPrice <= this.currentSlPrice) {
+                reason = `📈 跟踪止盈: 最优+${this.bestProfitPt.toFixed(1)}pt → 回撤到 ${pnlPt.toFixed(1)}pt`;
+            }
+            if (this.positionSide === "short" && currentPrice >= this.currentSlPrice) {
+                reason = `📈 跟踪止盈: 最优+${this.bestProfitPt.toFixed(1)}pt → 回撤到 ${pnlPt.toFixed(1)}pt`;
             }
         }
 
-        // ═══ Layer 5: n-of-1 Stage 2 — 15m 结构护卫退出 ═══
-        if (!reason && this.stage1Closed) {
-            if (this.positionSide === "long" && last1mClose > 0 && prev15mLow > 0 && last1mClose < prev15mLow) {
-                reason = `🏗️ 15m结构护卫: 1m收=${last1mClose.toFixed(prec.price)} < 15mL=${prev15mLow.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
-            }
-            if (this.positionSide === "short" && last1mClose > 0 && prev15mHigh > 0 && last1mClose > prev15mHigh) {
-                reason = `🏗️ 15m结构护卫: 1m收=${last1mClose.toFixed(prec.price)} > 15mH=${prev15mHigh.toFixed(prec.price)} | +${pnlPt.toFixed(prec.price)}pt`;
-            }
-        }
-
-        // ═══ Layer 6: CEO 因果法则 — 疲劳>90% + 吸能 = 小段结束 ═══
-        // FEE_SHIELD: pnlPt >= 6 才允许
-        if (!reason && fatigue > 0.9 && pnlPt >= FEE_SHIELD_PT && ethInstantVol > 0 && ethAvgVol > 0) {
-            const volRatio = ethInstantVol / ethAvgVol + 0.0001;
-            const instantEff = Math.abs(currentPrice - ethLastPrice) / volRatio;
-            if (instantEff < ABSORPTION_EFF_MIN) {
-                reason = `🎯 因果收网: 疲劳=${(fatigue*100).toFixed(0)}%>90% + 吸能=${instantEff.toFixed(3)}<0.15 | +${pnlPt.toFixed(prec.price)}pt — 小段结束,不贪`;
-            }
+        // ═══ Layer 4: 高滑点激进出场 ═══
+        if (!reason && this.highSlippage && pnlPt >= 1.0) {
+            reason = `🚨 高滑点出场 [Slip=${this.lastSlippage.toFixed(2)}pt]: +${pnlPt.toFixed(prec.price)}pt`;
         }
 
         // ═══ 执行平仓 ═══
@@ -734,11 +692,9 @@ export class BitunixExecutor {
         this.slOrderId = "";
         this.currentSlPrice = 0;
         this._entering = false;
-        this.zeroRiskTriggered = false;
-        this.structGuardPrice = 0;
+        this.breakevenTriggered = false;
+        this.bestProfitPt = 0;
         this.highSlippage = false;
-        this.stage1Closed = false;
-        this.originalQty = 0;
     }
 
     private logTrade(reason: string, pnlPt: number, netPnlU: number) {
