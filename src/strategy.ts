@@ -116,41 +116,41 @@ export class WindowStrategy {
         const prev1h = indicators.getPrev1hChange();
         const barRR = indicators.getCurrentBarRangeRatio();
 
+        // 前1h量价因果
+        const vpc = indicators.getPrev1hVolumePriceCausal();
+
         const snap = { rsi, vwapDev, usedRange, atr, prev1hChange: prev1h, barRangeRatio: barRR };
 
         let signal: WindowSignal | null = null;
 
         // ═══ 每个窗口双向检查: 多空都看，条件满足哪个做哪个 ═══
 
-        // ─── 做多条件: RSI<30 + VWAP偏下 ───
-        const longOk = rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN;
-        // ─── 做空条件: RSI>70 + VWAP偏上 ───
-        const shortOk = rsi > RSI_OVERBOUGHT && vwapDev > VWAP_DEV_MIN;
+        // ─── 做多条件: RSI<30 + VWAP偏下 + 量价非空头确认 ───
+        const longOk = rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN && vpc.direction !== "bearish";
+        // ─── 做空条件: RSI>70 + VWAP偏上 + 量价非多头确认 ───
+        const shortOk = rsi > RSI_OVERBOUGHT && vwapDev > VWAP_DEV_MIN && vpc.direction !== "bullish";
 
         if (activeWindow.name === "08窗口") {
-            // 08:00 — 日振已用少 → 偏做多(均值回归); 日振已用多 → 可做空(趋势延续)
             if (longOk && usedRange < RANGE_LOW_THRESHOLD) {
-                signal = this.buildSignal("long", `🌅 08:00 做多`, currentPrice, snap, activeWindow.name);
+                signal = this.buildSignal("long", `🌅 08:00 做多`, currentPrice, snap, activeWindow.name, vpc);
             } else if (shortOk && usedRange > RANGE_HIGH_THRESHOLD) {
-                signal = this.buildSignal("short", `🌅 08:00 做空`, currentPrice, snap, activeWindow.name);
+                signal = this.buildSignal("short", `🌅 08:00 做空`, currentPrice, snap, activeWindow.name, vpc);
             }
         }
 
         if (activeWindow.name === "15窗口") {
-            // 15:00 — 日振已用多 → 偏做空(超涨回落); 日振已用少 → 可做多(低位反弹)
             if (shortOk && usedRange > RANGE_HIGH_THRESHOLD) {
-                signal = this.buildSignal("short", `🌇 15:00 做空`, currentPrice, snap, activeWindow.name);
+                signal = this.buildSignal("short", `🌇 15:00 做空`, currentPrice, snap, activeWindow.name, vpc);
             } else if (longOk && usedRange < RANGE_LOW_THRESHOLD) {
-                signal = this.buildSignal("long", `🌇 15:00 做多`, currentPrice, snap, activeWindow.name);
+                signal = this.buildSignal("long", `🌇 15:00 做多`, currentPrice, snap, activeWindow.name, vpc);
             }
         }
 
         if (activeWindow.name === "22窗口") {
-            // 22:00 — 全天最大波动窗口，多空都有机会
             if (longOk && usedRange > RANGE_FULL_THRESHOLD && barRR > 1.0) {
-                signal = this.buildSignal("long", `🌙 22:00 做多(假跌反弹)`, currentPrice, snap, activeWindow.name);
+                signal = this.buildSignal("long", `🌙 22:00 做多(假跌反弹)`, currentPrice, snap, activeWindow.name, vpc);
             } else if (shortOk && usedRange > RANGE_FULL_THRESHOLD && barRR > 1.0) {
-                signal = this.buildSignal("short", `🌙 22:00 做空(假涨反跌)`, currentPrice, snap, activeWindow.name);
+                signal = this.buildSignal("short", `🌙 22:00 做空(假涨反跌)`, currentPrice, snap, activeWindow.name, vpc);
             }
         }
 
@@ -158,7 +158,7 @@ export class WindowStrategy {
             this.lastWindowSignal = activeWindow.name;
             this._pendingSignal = signal;
             this._ceoApproved = false;
-            log(`📡 ${signal.windowName} ${signal.side.toUpperCase()} 信号 → 等待 CEO 确认`);
+            log(`📡 ${signal.windowName} ${signal.side.toUpperCase()} 信号 → 量价=${vpc.direction} 买卖比=${vpc.ratio.toFixed(1)} → 等待 CEO 确认`);
         }
 
         return signal;
@@ -169,14 +169,18 @@ export class WindowStrategy {
         side: "long" | "short", title: string,
         price: number, snap: WindowSignal["indicators"],
         windowName: string,
+        vpc: { ratio: number; volTrend: number; direction: string },
     ): WindowSignal {
         const { rsi, vwapDev, usedRange, atr, prev1hChange, barRangeRatio } = snap;
         const sideLabel = side === "long" ? "做多📈" : "做空📉";
+        const vpcLabel = vpc.direction === "bullish" ? "🟢多头量能" :
+                         vpc.direction === "bearish" ? "🔴空头量能" : "⚪中性量能";
         const reason =
             `${title} ${sideLabel}\n` +
             `RSI=${rsi.toFixed(0)} ${side === "long" ? `(<${RSI_OVERSOLD})` : `(>${RSI_OVERBOUGHT})`} ✅\n` +
             `VWAP偏=${vwapDev > 0 ? "+" : ""}${vwapDev.toFixed(2)}% ✅\n` +
             `日振=${(usedRange * 100).toFixed(0)}% ✅\n` +
+            `量价因果: ${vpcLabel} 买卖比=${vpc.ratio.toFixed(1)} 量趋=${vpc.volTrend.toFixed(1)}x\n` +
             `前1h=${prev1hChange > 0 ? "+" : ""}${prev1hChange.toFixed(2)}% | ATR=${atr.toFixed(1)}pt`;
         return {
             side, price, qty: ENTRY_QTY,
@@ -185,3 +189,4 @@ export class WindowStrategy {
         };
     }
 }
+

@@ -205,6 +205,54 @@ export class IndicatorEngine {
         return start > 0 ? (end - start) / start * 100 : 0;
     }
 
+    // ═══════════════════════════════════════
+    // 前 1 小时量价因果比对
+    // ═══════════════════════════════════════
+    /**
+     * 分析前 12 根 5m K 线的量价关系:
+     * - buyVol: 涨K(收>开)的总成交量
+     * - sellVol: 跌K(收<开)的总成交量
+     * - ratio: buyVol / sellVol (>1=多头量能, <1=空头量能)
+     * - volTrend: 后6根 vs 前6根量比 (>1=放量, <1=缩量)
+     * - direction: "bullish" | "bearish" | "neutral"
+     */
+    getPrev1hVolumePriceCausal(): {
+        buyVol: number; sellVol: number; ratio: number;
+        volTrend: number; direction: "bullish" | "bearish" | "neutral";
+    } {
+        const c = this.candles5m;
+        const result = { buyVol: 0, sellVol: 0, ratio: 1, volTrend: 1, direction: "neutral" as const };
+        if (c.length < 12) return result;
+
+        const last12 = c.slice(-12);
+        let buyVol = 0, sellVol = 0;
+        let first6Vol = 0, last6Vol = 0;
+
+        for (let i = 0; i < 12; i++) {
+            const k = last12[i];
+            if (k.c > k.o) {
+                buyVol += k.v;  // 涨K的量 = 买方力量
+            } else {
+                sellVol += k.v; // 跌K的量 = 卖方力量
+            }
+            if (i < 6) first6Vol += k.v;
+            else last6Vol += k.v;
+        }
+
+        const ratio = sellVol > 0 ? buyVol / sellVol : (buyVol > 0 ? 99 : 1);
+        const volTrend = first6Vol > 0 ? last6Vol / first6Vol : 1;
+
+        // 量价因果判断:
+        // 量增(volTrend>1) + 买量>卖量(ratio>1.2) = 多头确认
+        // 量增(volTrend>1) + 卖量>买量(ratio<0.8) = 空头确认
+        // 否则 = 中性
+        let direction: "bullish" | "bearish" | "neutral" = "neutral";
+        if (ratio > 1.2 && volTrend > 0.8) direction = "bullish";
+        if (ratio < 0.8 && volTrend > 0.8) direction = "bearish";
+
+        return { buyVol, sellVol, ratio, volTrend, direction };
+    }
+
     /** 最新价格 */
     getLatestPrice(): number {
         if (this.candles5m.length === 0) return 0;
@@ -220,6 +268,7 @@ export class IndicatorEngine {
     // 快照 (用于信号报告)
     // ═══════════════════════════════════════
     getSnapshot(currentPrice: number) {
+        const vpc = this.getPrev1hVolumePriceCausal();
         return {
             rsi: this.getRSI(),
             vwap: this.getVWAP(),
@@ -229,6 +278,11 @@ export class IndicatorEngine {
             barRangeRatio: this.getCurrentBarRangeRatio(),
             prev1hChange: this.getPrev1hChange(),
             prevDayRange: this.prevDayRange,
+            // 量价因果
+            prev1hBuySellRatio: vpc.ratio,
+            prev1hVolTrend: vpc.volTrend,
+            prev1hDirection: vpc.direction,
         };
     }
 }
+
