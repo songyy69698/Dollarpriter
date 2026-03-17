@@ -1,8 +1,9 @@
 /**
- * 🎯 V90 时段窗口策略 — CEO 确认模式
+ * 🎯 V91 因果套利 + 平衡型出场
  * ═══════════════════════════════════════
- * 三窗口入场 + 混合止盈(SL→保本→跟踪)
- * 每个窗口发信号给 CEO 确认后才开单
+ * 入场: 买压>卖墙×2.5 + 效率>均值 (实时盘口)
+ * 出场: SL12 → 保本10+3 → 跟踪10
+ * 核心: 盘口因果edge入场 + 大盈亏比出场
  */
 
 // ═══════════════════════════════════════
@@ -62,12 +63,12 @@ export const RANGE_HIGH_THRESHOLD = 0.6;    // 15:00 做空: 日振已用 > 60%
 export const RANGE_FULL_THRESHOLD = 0.7;    // 22:00 做多: 日振已用 > 70%
 
 // ═══════════════════════════════════════
-// V90 出场: 混合止盈 (SL→保本→跟踪)
+// V91 出场: 平衡型 (SL12→保本10+3→跟踪10)
 // ═══════════════════════════════════════
-export const INITIAL_SL_PT = 8.0;           // 初始止损 8pt
-export const BREAKEVEN_PT = 5.0;            // 浮盈 5pt → 移 SL 到入场+1pt
-export const BREAKEVEN_SL_OFFSET = 1.0;     // 保本后 SL = 入场 + 1pt
-export const TRAILING_PT = 5.0;             // 跟踪距离 5pt
+export const INITIAL_SL_PT = 12.0;          // 初始止损 12pt (给呼吸空间)
+export const BREAKEVEN_PT = 10.0;           // 浮盈 10pt → 移 SL 到入场+3pt
+export const BREAKEVEN_SL_OFFSET = 3.0;     // 保本后 SL = 入场 + 3pt (锁利)
+export const TRAILING_PT = 10.0;            // 跟踪距离 10pt (让利润跑)
 export const MAX_HOLD_BARS = 60;            // 最长持仓 60 根 5m = 5 小时
 
 // ═══════════════════════════════════════

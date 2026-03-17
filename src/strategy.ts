@@ -1,23 +1,19 @@
 /**
- * 🎯 V90.4 时段窗口策略 — 精准入场
- * ═══════════════════════════════════════════
- * 每个窗口都开单，但等"动能衰竭"再进:
- *   1. 先检测方向 (RSI+VWAP+日振)
- *   2. 在窗口内等最佳时机:
- *      - 实体/ATR < 0.8 (K线变小=犹豫)
- *      - RSI 在减速 (动能衰竭)
- *   3. 如果窗口快结束还没等到 → 最后5分钟照开
+ * 🧠 V91 因果套利策略 — 时间窗口 + 盘口因果
+ * ═══════════════════════════════════════════════════════
+ * 只在 CEO 指定的三个时段内寻找因果套利信号:
+ *   08:00-09:00 | 15:00-16:00 | 22:00-23:00 (UTC+8)
  *
+ * 入场: ethBuyDelta > ethAskWallVol × 2.5 且 效率 > 均值
+ * 出场: executor.ts 管理 (SL=12 → 保本10+3 → 跟踪10)
  * CEO 确认后才开，不回自动 2ETH
  */
 
-import type { IndicatorEngine } from "./indicators";
+import type { CausalSnapshot } from "./bitunix-ws";
 import {
-    TRADE_WINDOWS, ENTRY_QTY,
-    RSI_OVERSOLD, RSI_OVERBOUGHT,
-    VWAP_DEV_MIN,
-    RANGE_LOW_THRESHOLD, RANGE_HIGH_THRESHOLD, RANGE_FULL_THRESHOLD,
-    COOLDOWN_MS, ETH_SYMBOL,
+    COOLDOWN_MS, ETH_SYMBOL, ENTRY_QTY,
+    MAX_SPREAD_POINTS, MIN_DEPTH_ETH,
+    TRADE_WINDOWS,
 } from "./config";
 
 function log(msg: string) {
@@ -25,76 +21,69 @@ function log(msg: string) {
     console.log(`${ts} [strategy] ${msg}`);
 }
 
-export interface WindowSignal {
+export interface CausalSignal {
     side: "long" | "short";
     price: number;
     qty: number;
     reason: string;
     targetSymbol: string;
     windowName: string;
-    indicators: {
-        rsi: number;
-        vwapDev: number;
-        usedRange: number;
-        atr: number;
-        prev1hChange: number;
-        barRangeRatio: number;
-    };
+    // 信号强度
+    imbalanceRatio: number;
+    efficiency: number;
 }
 
-export class WindowStrategy {
+// 向后兼容
+export type WindowSignal = CausalSignal;
+
+export class CausalStrategy {
     private lastTradeTs = 0;
-    private lastWindowSignal = "";  // 同一窗口不重复发信号
     private scanCount = 0;
-    private _pendingSignal: WindowSignal | null = null;
+    private _pendingSignal: CausalSignal | null = null;
     private _ceoApproved = false;
 
-    // 窗口内等待状态
-    private windowDirection: "long" | "short" | "" = "";  // 已确定方向
-    private windowDetectedAt = 0;     // 首次检测到方向的时间
-    private windowName = "";
+    // 同一窗口不重复发信号
+    private lastWindowSignal = "";
 
     getScanCount(): number { return this.scanCount; }
-    get pendingSignal(): WindowSignal | null { return this._pendingSignal; }
+    get pendingSignal(): CausalSignal | null { return this._pendingSignal; }
     get ceoApproved(): boolean { return this._ceoApproved; }
 
-    /** CEO 通过 Telegram 确认 */
     approveTrade(): void {
         this._ceoApproved = true;
         log("✅ CEO 确认开单!");
     }
 
-    /** 清除待确认信号 */
     clearPending(): void {
         this._pendingSignal = null;
         this._ceoApproved = false;
     }
 
-    /** 标记已开单 */
     markTraded(): void {
         this.lastTradeTs = Date.now();
         this.clearPending();
-        this.windowDirection = "";
-        this.windowDetectedAt = 0;
     }
 
     /**
-     * 评估: 在窗口内找最佳入场时机
+     * 评估因果套利信号
+     * Step 1: 检查是否在 CEO 指定的时间窗口内
+     * Step 2: 检查盘口因果信号 (买压>卖墙×2.5)
      */
-    evaluate(currentPrice: number, indicators: IndicatorEngine): WindowSignal | null {
+    evaluate(snapshot: CausalSnapshot): CausalSignal | null {
         this.scanCount++;
         const now = Date.now();
 
-        // 冷却检查
+        // 冷却
         if (now - this.lastTradeTs < COOLDOWN_MS) return null;
+        // 已有待确认信号
+        if (this._pendingSignal) return null;
 
-        // 当前 UTC+8 时间
+        // ═══ Step 1: 时间窗口检查 (UTC+8) ═══
         const dt = new Date();
         const utc8Hour = (dt.getUTCHours() + 8) % 24;
         const utc8Min = dt.getUTCMinutes();
         const hm = utc8Hour * 60 + utc8Min;
 
-        // 检查哪个窗口
         let activeWindow: typeof TRADE_WINDOWS[0] | null = null;
         for (const w of TRADE_WINDOWS) {
             const wStart = w.startHour * 60 + w.startMin;
@@ -106,135 +95,83 @@ export class WindowStrategy {
         }
 
         if (!activeWindow) {
-            // 不在窗口 → 重置状态
+            // 不在窗口 → 重置
             this.lastWindowSignal = "";
-            this.windowDirection = "";
-            this.windowDetectedAt = 0;
             return null;
         }
 
-        // 同一窗口已发过信号
+        // 同窗口已发过信号
         if (this.lastWindowSignal === activeWindow.name) return null;
 
-        if (!indicators.ready) return null;
-        if (currentPrice <= 0) return null;
+        // ═══ Step 2: 因果套利检测 ═══
+        const {
+            ethPrice, ethBuyDelta, ethSellDelta,
+            ethAskWallVol, ethBidWallVol,
+            ethEfficiency, ethAvgEfficiency,
+            ethSpread, ethConnected,
+        } = snapshot;
 
-        // 计算指标
-        const rsi = indicators.getRSI();
-        const vwapDev = indicators.getVWAPDeviation(currentPrice);
-        const usedRange = indicators.getUsedRangeRatio(currentPrice);
-        const atr = indicators.getATR();
-        const prev1h = indicators.getPrev1hChange();
-        const barRR = indicators.getCurrentBarRangeRatio();
+        // 基本检查
+        if (!ethConnected || ethPrice <= 0) return null;
+        if (ethAskWallVol <= 0 && ethBidWallVol <= 0) return null;
+        if (ethAvgEfficiency <= 0) return null;
 
-        // 亏损单反思指标
-        const bodyR = indicators.getCurrentBarRangeRatio(); // 实体/ATR
-        const rsiSpeed = indicators.getRSISpeed();          // RSI 变速
-
-        // 前1h量价因果 (参考信息)
-        const vpc = indicators.getPrev1hVolumePriceCausal();
-
-        const snap = { rsi, vwapDev, usedRange, atr, prev1hChange: prev1h, barRangeRatio: barRR };
-
-        // ═══ Step 1: 检测方向 (多空都看) ═══
-        const longOk = rsi < RSI_OVERSOLD && vwapDev < -VWAP_DEV_MIN;
-        const shortOk = rsi > RSI_OVERBOUGHT && vwapDev > VWAP_DEV_MIN;
-
-        let detectedSide: "long" | "short" | "" = "";
-
-        if (activeWindow.name === "08窗口") {
-            if (longOk && usedRange < RANGE_LOW_THRESHOLD) detectedSide = "long";
-            else if (shortOk && usedRange > RANGE_HIGH_THRESHOLD) detectedSide = "short";
-        }
-
-        if (activeWindow.name === "15窗口") {
-            if (shortOk && usedRange > RANGE_HIGH_THRESHOLD) detectedSide = "short";
-            else if (longOk && usedRange < RANGE_LOW_THRESHOLD) detectedSide = "long";
-        }
-
-        if (activeWindow.name === "22窗口") {
-            if (longOk && usedRange > RANGE_FULL_THRESHOLD && barRR > 1.0) detectedSide = "long";
-            else if (shortOk && usedRange > RANGE_FULL_THRESHOLD && barRR > 1.0) detectedSide = "short";
-        }
-
-        if (!detectedSide) return null;
-
-        // 首次检测到方向 → 记录
-        if (!this.windowDirection) {
-            this.windowDirection = detectedSide;
-            this.windowDetectedAt = now;
-            this.windowName = activeWindow.name;
-            log(`🔍 ${activeWindow.name} 检测到 ${detectedSide.toUpperCase()} 方向 → 等待最佳入场时机...`);
-        }
-
-        // ═══ Step 2: 等最佳入场时机 ═══
-        // 亏损单反思: 赢单实体比=0.58, 亏单=1.04; 赢单RSI减速, 亏单RSI加速
-        const isDecelerating = detectedSide === "long"
-            ? rsiSpeed < 0
-            : rsiSpeed > 0;
-
-        const bodySmall = bodyR < 0.8;
-
-        // RSI 线形分析
-        const rsiShape = indicators.getRSIShape();
-        const rsiConfirm = detectedSide === "long"
-            ? (rsiShape.bullishDiv || rsiShape.rsiCurveUp)   // 做多: 底背离或弯头向上
-            : (rsiShape.bearishDiv || rsiShape.rsiCurveDown); // 做空: 顶背离或弯头向下
-
-        // 精准时机: 满足任一即可 (不错失机会)
-        const timingGood = bodySmall || isDecelerating || rsiConfirm;
-
-        // 窗口快结束了 (最后5分钟) → 不再等
-        const windowEnd = activeWindow.endHour * 60 + activeWindow.endMin;
-        const minutesLeft = windowEnd - hm;
-        const urgentEntry = minutesLeft <= 5;
-
-        if (!timingGood && !urgentEntry) {
-            if (this.scanCount % 12 === 0) {
-                log(`⏳ ${activeWindow.name} ${detectedSide.toUpperCase()} 等待中... 实体=${bodyR.toFixed(2)} RSI速=${rsiSpeed.toFixed(1)} RSI形=${rsiShape.desc} 剩${minutesLeft}min`);
+        // Spread 门控
+        if (ethSpread > MAX_SPREAD_POINTS) {
+            if (this.scanCount % 60 === 0) {
+                log(`⚠️ ${activeWindow.name} Spread过大: ${ethSpread.toFixed(2)}pt`);
             }
             return null;
         }
 
-        // ═══ Step 3: 产生信号 ═══
-        // 判断精准度等级
-        let precisionScore = 0;
-        if (bodySmall) precisionScore++;
-        if (isDecelerating) precisionScore++;
-        if (rsiConfirm) precisionScore++;
-        const entryType = urgentEntry && !timingGood
-            ? "⏰末班车"
-            : precisionScore >= 3 ? "🎯🎯🎯完美" : precisionScore >= 2 ? "🎯🎯高精" : "🎯精准";
+        const IMBALANCE_RATIO = 2.5;
+        const EFFICIENCY_THRESHOLD = 1.0;
 
-        const title = activeWindow.name === "08窗口" ? "🌅 08:00" :
-                      activeWindow.name === "15窗口" ? "🌇 15:00" : "🌙 22:00";
+        let side: "long" | "short" | "" = "";
+        let ratio = 0;
+        let reason = "";
 
-        const vpcLabel = vpc.direction === "bullish" ? "🟢多头量能" :
-                         vpc.direction === "bearish" ? "🔴空头量能" : "⚪中性量能";
+        // 做多: 买压 > 卖墙 × 2.5
+        if (ethAskWallVol > 0) {
+            const buyImb = ethBuyDelta / ethAskWallVol;
+            if (buyImb > IMBALANCE_RATIO && ethEfficiency > ethAvgEfficiency * EFFICIENCY_THRESHOLD) {
+                side = "long";
+                ratio = buyImb;
+                reason = `📈 ${activeWindow.name} 因果做多 | 买压/卖墙=${buyImb.toFixed(1)}x | 效率=${ethEfficiency.toFixed(4)}`;
+            }
+        }
 
-        const sideLabel = detectedSide === "long" ? "做多📈" : "做空📉";
-        const reason =
-            `${title} ${sideLabel} [${entryType}]\n` +
-            `RSI=${rsi.toFixed(0)} ${detectedSide === "long" ? `(<${RSI_OVERSOLD})` : `(>${RSI_OVERBOUGHT})`} ✅\n` +
-            `VWAP偏=${vwapDev > 0 ? "+" : ""}${vwapDev.toFixed(2)}% ✅\n` +
-            `日振=${(usedRange * 100).toFixed(0)}% ✅\n` +
-            `实体比=${bodyR.toFixed(2)} ${bodySmall ? "✅小(犹豫)" : "⚠️大(加速)"}\n` +
-            `RSI速=${rsiSpeed.toFixed(1)} ${isDecelerating ? "✅减速" : "⚠️加速"}\n` +
-            `RSI形态: ${rsiShape.desc}\n` +
-            `量价: ${vpcLabel} 买卖比=${vpc.ratio.toFixed(1)}\n` +
-            `前1h=${prev1h > 0 ? "+" : ""}${prev1h.toFixed(2)}% | ATR=${atr.toFixed(1)}pt`;
+        // 做空: 卖压 > 买墙 × 2.5
+        if (!side && ethBidWallVol > 0) {
+            const sellImb = ethSellDelta / ethBidWallVol;
+            if (sellImb > IMBALANCE_RATIO && ethEfficiency > ethAvgEfficiency * EFFICIENCY_THRESHOLD) {
+                side = "short";
+                ratio = sellImb;
+                reason = `📉 ${activeWindow.name} 因果做空 | 卖压/买墙=${sellImb.toFixed(1)}x | 效率=${ethEfficiency.toFixed(4)}`;
+            }
+        }
 
-        const signal: WindowSignal = {
-            side: detectedSide, price: currentPrice, qty: ENTRY_QTY,
-            reason, targetSymbol: ETH_SYMBOL, windowName: activeWindow.name,
-            indicators: snap,
+        if (!side) return null;
+
+        const signal: CausalSignal = {
+            side,
+            price: ethPrice,
+            qty: ENTRY_QTY,
+            reason,
+            targetSymbol: ETH_SYMBOL,
+            windowName: activeWindow.name,
+            imbalanceRatio: ratio,
+            efficiency: ethEfficiency,
         };
 
         this.lastWindowSignal = activeWindow.name;
         this._pendingSignal = signal;
         this._ceoApproved = false;
-        log(`📡 ${activeWindow.name} ${detectedSide.toUpperCase()} [${entryType}] 精准=${precisionScore}/3 RSI形=${rsiShape.desc}`);
+        log(`📡 ${reason}`);
 
         return signal;
     }
 }
+
+// 向后兼容: 导出 WindowStrategy 别名
+export { CausalStrategy as WindowStrategy };
