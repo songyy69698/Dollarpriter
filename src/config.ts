@@ -78,7 +78,7 @@ export function getMargin(balance: number): number {
 // ═══════════════════════════════════════
 // 冷却 & 安全
 // ═══════════════════════════════════════
-export const COOLDOWN_MS = 120_000;            // 120s 冷却
+export const COOLDOWN_MS = 3_600_000;           // 1小时冷却 (每小时最多1单)
 export const MIN_HOLD_MS = 30_000;             // 最少持仓 30s
 export const WS_LAG_MAX_MS = 500;
 export const MAX_DAILY_TRADES = 3;             // V80.3: 日限 3 单
