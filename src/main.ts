@@ -68,9 +68,10 @@ class DollarprinterBot {
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
         await notifyTG(
-            `🎯 *V91 Mom12 冠军策略启动*\n` +
+            `🎯 *V92 灵活多空策略*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 Mom12>${MOM12_THRESHOLD}pt + 放量×${VOL_MULTIPLIER}\n` +
+            `📊 08→RSI<35做多(71%) | 15→RSI<25做多(86%)\n` +
+            `📊 22→Mom12>20做空(83%) | Mom4±8(60-63%)\n` +
             `🛡️ SL=${INITIAL_SL_PT} → BE${BREAKEVEN_PT}+1 → TR${TRAILING_PT}\n` +
             `⏰ 窗口: 08/15/22 UTC+8\n` +
             `发 *1* 激活`,
