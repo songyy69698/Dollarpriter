@@ -48,10 +48,11 @@ export interface WindowConfig {
     endMin: number;
 }
 
-/** CEO 规划的三个交易窗口 (UTC+8) */
+/** CEO 规划的四个交易窗口 (UTC+8) */
 export const TRADE_WINDOWS: WindowConfig[] = [
     { name: "08窗口", startHour: 8, startMin: 0, endHour: 9, endMin: 0 },
     { name: "15窗口", startHour: 15, startMin: 0, endHour: 16, endMin: 0 },
+    { name: "19窗口", startHour: 19, startMin: 0, endHour: 19, endMin: 30 },  // 美股盘前
     { name: "22窗口", startHour: 22, startMin: 0, endHour: 23, endMin: 0 },
 ];
 
