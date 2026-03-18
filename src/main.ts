@@ -68,13 +68,12 @@ class DollarprinterBot {
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
         await notifyTG(
-            `🎯 *V92b 本周策略: 只做多*\n` +
+            `🎯 *V93 六重共振策略*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 Mom12<-40pt + 放量≥1.5x → 做多\n` +
-            `📈 RSI=19超卖 → 抓反弹\n` +
-            `🛡️ SL=${INITIAL_SL_PT} → BE${BREAKEVEN_PT}+1 → TR${TRAILING_PT}\n` +
+            `📊 POC+RSI+ATR+量+K棒+疲劳 全绿进\n` +
+            `🛡️ 窗口收盘平仓 + SL=${INITIAL_SL_PT}pt保护\n` +
             `⏰ 窗口: 08/15/22 UTC+8\n` +
-            `发 *1* 激活`,
+            `发 *1* 激活 | *r* 反思`,
         );
 
         await this.executor.setupTradeEnv(ETH_SYMBOL);
@@ -246,8 +245,8 @@ class DollarprinterBot {
         let lastId = 0;
         setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V92b 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V92b 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V93 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V93 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {
@@ -287,8 +286,8 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V92b 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
-                "/help": async () => { await notifyTG(`📖 *V92b 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
+                "h": async () => { await notifyTG(`📖 *V93 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
+                "/help": async () => { await notifyTG(`📖 *V93 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
             });
         }, 2000);
     }
@@ -299,7 +298,7 @@ class DollarprinterBot {
         const upMs = Date.now() - this.startTime;
         const upH = Math.floor(upMs / 3600_000), upM = Math.floor((upMs % 3600_000) / 60_000);
 
-        let m = `🎯 *V92b*\n──────────\n`;
+        let m = `🎯 *V93*\n──────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${upH}h${upM}m\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
@@ -322,7 +321,7 @@ class DollarprinterBot {
         const b = await this.executor.getBalance();
         const upH = Math.floor((Date.now() - this.startTime) / 3600_000);
         await notifyTG(
-            `💓 *V92b* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
+            `💓 *V93* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
             `ETH $${s.ethPrice.toFixed(2)} | $${b.toFixed(2)}\n` +
             `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`,
         );
