@@ -1,9 +1,9 @@
 /**
- * 🎯 Dollarprinter V91 — Mom12 冠军策略
+ * 🎯 Dollarprinter V93 — 六重共振策略
  * ═══════════════════════════════════════════════════
- * 回测: $200→$939 (+$739) | 15笔 | 43%胜率 | 4.4:1盈亏比
- * 入场: Mom12>40pt + 放量×2 + K棒形态 + CEO窗口(08/15/22)
- * 出场: SL=8pt → 保本5+1 → 跟踪15pt
+ * 回测: 20天14笔79%胜+$591 | 本周4笔100%胜+$158
+ * 入场: POC+RSI+量+ATR+K棒+疲劳 全绿 + 回调进
+ * 出场: 窗口收盘平仓 + 硬SL=8保护
  * 模式: 信号→CEO确认→5ETH | 不回→自动3ETH
  */
 
@@ -159,19 +159,22 @@ class DollarprinterBot {
 
     private async sendSignalNotification(sig: Mom12Signal) {
         const msg =
-            `🎯 *Mom12 信号*\n` +
+            `🎯 *V93 六绿全亮*\n` +
             `──────────\n` +
             `⏰ ${sig.windowName}\n` +
             `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
             `价格: $${sig.price.toFixed(2)}\n` +
             `──────────\n` +
-            `动量: ${sig.momentum.toFixed(1)}pt (>${MOM12_THRESHOLD})\n` +
-            `成交量: ${sig.volRatio.toFixed(1)}x (>×${VOL_MULTIPLIER})\n` +
+            `POC: ${sig.momentum >= 0 ? "+" : ""}${sig.momentum.toFixed(0)}pt\n` +
+            `量: ${sig.volRatio.toFixed(1)}x\n` +
             `──────────\n` +
+            `窗口收盘自动平仓\n` +
             `回 *y* → ${CEO_QTY}ETH\n` +
             `3分钟不回 → ${AUTO_QTY}ETH`;
         await notifyTG(msg);
     }
+
+    private windowCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
     private async executeEntry(side: "long" | "short", price: number, qty: number) {
         const s = this.ws.getSnapshot();
@@ -187,6 +190,34 @@ class DollarprinterBot {
             );
             await Bun.sleep(500);
             await this.executor.syncPositions();
+
+            // ═══ V93: 窗口收盘定时平仓 ═══
+            const pending = this.strategy.pendingSignal;
+            if (pending?.windowEndTs) {
+                const msToClose = pending.windowEndTs - Date.now();
+                if (msToClose > 0 && msToClose < 3600_000) {
+                    if (this.windowCloseTimer) clearTimeout(this.windowCloseTimer);
+                    const closeMinutes = (msToClose / 60_000).toFixed(1);
+                    log(`⏰ 窗口收盘平仓定时: ${closeMinutes}min后`);
+                    this.windowCloseTimer = setTimeout(async () => {
+                        if (!this.executor.inPosition) return;
+                        const snap = this.ws.getSnapshot();
+                        log(`⏰ 窗口收盘! 自动平仓`);
+                        const r = await this.executor.forceCloseAll(snap.ethPrice);
+                        if (r.ok) {
+                            this.dailyTrades++; this.dailyPnl += r.netPnlU;
+                            this.totalTrades++; this.totalPnl += r.netPnlU;
+                            const emoji = r.netPnlU > 0 ? "✅" : "❌";
+                            await notifyTG(
+                                `${emoji} *窗口收盘平仓*\n` +
+                                `净PnL: ${r.netPnlU >= 0 ? "+" : ""}${r.netPnlU.toFixed(2)}U\n` +
+                                `今日: ${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(2)}U`,
+                            );
+                        }
+                        this.windowCloseTimer = null;
+                    }, msToClose);
+                }
+            }
         }
     }
 
