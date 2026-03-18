@@ -105,35 +105,41 @@ export class Mom12Strategy {
     }
 
     // ═══ 指标 ═══
+    /**
+     * 🐛 FIX: 所有指标用倒数第二根(已完成K线)
+     * 最后一根是未完成的，volume/close都不准
+     */
     private mom12(): number {
         const n = this.klines.length;
-        return n >= 13 ? this.klines[n - 1].c - this.klines[n - 13].c : 0;
+        return n >= 14 ? this.klines[n - 2].c - this.klines[n - 14].c : 0;
     }
 
     private atr14(): number {
-        const n = this.klines.length; if (n < 14) return 0;
-        let s = 0; for (let i = n - 14; i < n; i++) s += this.klines[i].h - this.klines[i].l;
+        const n = this.klines.length; if (n < 16) return 0;
+        let s = 0; for (let i = n - 15; i < n - 1; i++) s += this.klines[i].h - this.klines[i].l;
         return s / 14;
     }
 
     private avgVol(): number {
-        const n = this.klines.length; if (n < 20) return 1;
-        let s = 0; for (let i = n - 20; i < n; i++) s += this.klines[i].v;
+        const n = this.klines.length; if (n < 22) return 1;
+        let s = 0; for (let i = n - 21; i < n - 1; i++) s += this.klines[i].v;
         return s / 20;
     }
 
+    /** 用倒数第二根(已完成K线)的volume */
     private curVol(): number {
-        return this.klines.length > 0 ? this.klines[this.klines.length - 1].v : 0;
+        return this.klines.length >= 2 ? this.klines[this.klines.length - 2].v : 0;
     }
 
     /** K棒形态 (不看红绿!) */
+    /** K棒形态用倒数第二根(已完成K线) */
     private barShape(): { bodyR: number; upperR: number; lowerR: number } {
         const n = this.klines.length;
-        if (n < 2) return { bodyR: 1, upperR: 0, lowerR: 0 };
-        const k = this.klines[n - 1];
+        if (n < 3) return { bodyR: 1, upperR: 0, lowerR: 0 };
+        const k = this.klines[n - 2]; // 已完成K线
         const range = k.h - k.l;
         if (range <= 0) return { bodyR: 0, upperR: 0, lowerR: 0 };
-        const prevClose = this.klines[n - 2].c;
+        const prevClose = this.klines[n - 3].c;
         const bodyTop = Math.max(prevClose, k.c), bodyBot = Math.min(prevClose, k.c);
         return {
             bodyR: (bodyTop - bodyBot) / range,
@@ -183,7 +189,7 @@ export class Mom12Strategy {
         const bar = this.barShape();
 
         let side: "long" | "short" | "" = "";
-        const price = this.klines[this.klines.length - 1].c;
+        const price = this.klines[this.klines.length - 2].c; // 已完成K线价格
 
         // 做空: 涨太多 + 上影线 或 实体小
         if (mom > MOM12_THRESHOLD) {
