@@ -1,24 +1,23 @@
 /**
- * 🧠 V92 本周灵活多空策略
+ * 🧠 V92b 本周策略: Mom12>40 只做多
  * ═══════════════════════════════════════════════════════
- * 基于229窗口×200+条件穷举得出的高胜率规则:
+ * 本周判断 (3/19 周日扫描):
+ *   RSI=19 极度超卖 → 只做多（反弹概率高）
+ *   连涨3周后昨天暴跌5% → Mom12<-40 容易触发
+ *   做空不适合（超卖环境做空被反弹打）
  *
- * 08窗口: RSI<35 → 做多 (71%胜率, 14笔, +$327)
- * 15窗口: RSI<25 → 做多 (86%胜率, 7笔, +$244)
- *         RSI 25-40 + Mom4<-5 → 做多 (60%胜率, +$597)
- * 22窗口: Mom12>+20 → 做空 (83%胜率, 6笔, +$595)
+ * 入场: Mom12 < -40pt（1小时跌超40pt → 做多抓反弹）
+ *       + 成交量 ≥ 1.5x（用已完成K线）
+ * 保护: ATR < 55
+ * 出场: SL=8 → BE5+1 → TR15
  *
- * 通用补充 (任何窗口):
- *   Mom4<-8 → 做多 (63%胜率, 35笔, +$601)
- *   Mom4>+8 → 做空 (60%胜率, 20笔, +$649)
- *   Mom12>+25 → 做空 (88%胜率, 8笔, +$599)
- *
- * 出场: executor.ts (SL=8 → 保本5+1 → 跟踪15)
+ * 下周日重新判断是否换策略
  */
 
 import {
     TRADE_WINDOWS, ETH_SYMBOL, COOLDOWN_MS, BINANCE_BASE,
     ATR_BAN_THRESHOLD, MARGIN_PER_TRADE, LEVERAGE,
+    INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
 } from "./config";
 
 function log(msg: string) {
@@ -94,8 +93,8 @@ export class Mom12Strategy {
             }
 
             if (this.scanCount % 12 === 0) {
-                const k = this.klines[this.klines.length - 2];
-                log(`📊 K5m: ${this.klines.length}根 | $${k.c.toFixed(2)} | RSI=${this.rsi14().toFixed(0)} | Mom12=${this.mom12().toFixed(1)} | Mom4=${this.mom4().toFixed(1)} | ATR=${this.atr14().toFixed(1)}`);
+                const k = this.klines.length >= 2 ? this.klines[this.klines.length - 2] : this.klines[this.klines.length - 1];
+                log(`📊 K5m: ${this.klines.length}根 | $${k.c.toFixed(2)} | EMA200=$${this.ema200.toFixed(2)} | Mom12=${this.mom12().toFixed(1)} | ATR=${this.atr14().toFixed(1)}`);
             }
         } catch (e) {
             log(`⚠️ K线拉取失败: ${e}`);
@@ -109,29 +108,23 @@ export class Mom12Strategy {
         return n >= 14 ? this.klines[n - 2].c - this.klines[n - 14].c : 0;
     }
 
-    private mom4(): number {
-        const n = this.klines.length;
-        return n >= 6 ? this.klines[n - 2].c - this.klines[n - 6].c : 0;
-    }
-
     private atr14(): number {
         const n = this.klines.length; if (n < 16) return 0;
         let s = 0; for (let i = n - 15; i < n - 1; i++) s += this.klines[i].h - this.klines[i].l;
         return s / 14;
     }
 
-    private rsi14(): number {
-        const n = this.klines.length; if (n < 17) return 50;
-        let g = 0, l = 0;
-        for (let i = n - 15; i < n - 1; i++) {
-            const d = this.klines[i].c - this.klines[i - 1].c;
-            if (d > 0) g += d; else l += -d;
-        }
-        const ag = g / 14, al = l / 14;
-        return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+    private avgVol(): number {
+        const n = this.klines.length; if (n < 22) return 1;
+        let s = 0; for (let i = n - 21; i < n - 1; i++) s += this.klines[i].v;
+        return s / 20;
     }
 
-    /** V92 灵活多空入场 */
+    private curVol(): number {
+        return this.klines.length >= 2 ? this.klines[this.klines.length - 2].v : 0;
+    }
+
+    /** 本周策略: 只做多 */
     evaluate(): Mom12Signal | null {
         this.scanCount++;
         const now = Date.now();
@@ -161,79 +154,30 @@ export class Mom12Strategy {
             return null;
         }
 
-        // ═══ Step 3: 算指标 ═══
-        const mom12 = this.mom12();
-        const mom4 = this.mom4();
-        const rsi = this.rsi14();
+        // ═══ Step 3: Mom12 动量 (只做多: 跌超40pt) ═══
+        const mom = this.mom12();
+        if (mom >= -40) return null; // 本周只接跌超40pt的做多信号
+
+        // ═══ Step 4: 成交量确认 (放宽到1.5x) ═══
+        const volRatio = this.curVol() / this.avgVol();
+        if (volRatio < 1.5) return null;
+
+        // ═══ Step 5: 做多 ═══
         const price = this.klines[this.klines.length - 2].c;
-        const wn = activeWindow.name;
+        const reason = `📈 ${activeWindow.name} Mom12=${mom.toFixed(1)}pt 做多(超卖反弹) | 量=${volRatio.toFixed(1)}x | ATR=${atr.toFixed(1)}`;
 
-        let side: "long" | "short" | "" = "";
-        let reason = "";
-
-        // ═══ Step 4: 高胜率规则 (按胜率优先匹配) ═══
-
-        // 88% — Mom12>25 做空 (任何窗口)
-        if (!side && mom12 > 25) {
-            side = "short";
-            reason = `📉 Mom12=${mom12.toFixed(1)}>25 做空(88%) RSI=${rsi.toFixed(0)}`;
-        }
-
-        // 86% — RSI<25 + 15窗口 做多
-        if (!side && rsi < 25 && wn.includes("15")) {
-            side = "long";
-            reason = `📈 RSI=${rsi.toFixed(0)}<25+15窗口 做多(86%)`;
-        }
-
-        // 83% — Mom12>20 + 22窗口 做空
-        if (!side && mom12 > 20 && wn.includes("22")) {
-            side = "short";
-            reason = `📉 Mom12=${mom12.toFixed(1)}>20+22窗口 做空(83%)`;
-        }
-
-        // 71% — RSI<35 + 08窗口 做多
-        if (!side && rsi < 35 && wn.includes("08")) {
-            side = "long";
-            reason = `📈 RSI=${rsi.toFixed(0)}<35+08窗口 做多(71%)`;
-        }
-
-        // 67% — Mom12<-15 + 08窗口 做多
-        if (!side && mom12 < -15 && wn.includes("08")) {
-            side = "long";
-            reason = `📈 Mom12=${mom12.toFixed(1)}<-15+08窗口 做多(67%)`;
-        }
-
-        // 63% — Mom4<-8 做多 (任何窗口)
-        if (!side && mom4 < -8) {
-            side = "long";
-            reason = `📈 Mom4=${mom4.toFixed(1)}<-8 做多(63%)`;
-        }
-
-        // 60% — Mom4>8 做空 (任何窗口)
-        if (!side && mom4 > 8) {
-            side = "short";
-            reason = `📉 Mom4=${mom4.toFixed(1)}>8 做空(60%)`;
-        }
-
-        if (!side) return null;
-
-        // ═══ 生成信号 ═══
         const qty = (MARGIN_PER_TRADE * LEVERAGE) / price;
-        const fullReason = `${reason} | ${wn} ATR=${atr.toFixed(1)}`;
-
         const signal: Mom12Signal = {
-            side, price, qty,
-            reason: fullReason,
+            side: "long", price, qty, reason,
             targetSymbol: ETH_SYMBOL,
-            windowName: wn,
-            momentum: mom12,
-            volRatio: mom4,
+            windowName: activeWindow.name,
+            momentum: mom, volRatio,
         };
 
         this.lastWindowSignal = activeWindow.name;
         this._pendingSignal = signal;
         this._ceoApproved = false;
-        log(`📡 ${fullReason}`);
+        log(`📡 ${reason}`);
         return signal;
     }
 }

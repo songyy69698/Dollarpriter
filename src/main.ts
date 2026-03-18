@@ -17,7 +17,7 @@ import {
     INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
     MAX_DAILY_TRADES, MAX_DAILY_LOSS,
     ETH_SYMBOL, SYMBOL_PRECISION,
-    MOM12_THRESHOLD, VOL_MULTIPLIER,
+    MOM12_THRESHOLD, VOL_MULTIPLIER, BINANCE_BASE,
 } from "./config";
 
 function log(msg: string) {
@@ -68,10 +68,10 @@ class DollarprinterBot {
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
         await notifyTG(
-            `🎯 *V92 灵活多空策略*\n` +
+            `🎯 *V92b 本周策略: 只做多*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 08→RSI<35做多(71%) | 15→RSI<25做多(86%)\n` +
-            `📊 22→Mom12>20做空(83%) | Mom4±8(60-63%)\n` +
+            `📊 Mom12<-40pt + 放量≥1.5x → 做多\n` +
+            `📈 RSI=19超卖 → 抓反弹\n` +
             `🛡️ SL=${INITIAL_SL_PT} → BE${BREAKEVEN_PT}+1 → TR${TRAILING_PT}\n` +
             `⏰ 窗口: 08/15/22 UTC+8\n` +
             `发 *1* 激活`,
@@ -215,8 +215,8 @@ class DollarprinterBot {
         let lastId = 0;
         setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V91 Mom12 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V91 Mom12 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V92b 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V92b 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {
@@ -235,6 +235,9 @@ class DollarprinterBot {
                 "no": async () => { this.strategy.clearPending(); this.signalNotified = false; await notifyTG("🚫 *跳过*"); },
                 "s": async () => { await this.sendStatus(); },
                 "/status": async () => { await this.sendStatus(); },
+                "r": async () => { await this.reflect(); },
+                "反思": async () => { await this.reflect(); },
+                "/reflect": async () => { await this.reflect(); },
                 "x": async () => {
                     const s = this.ws.getSnapshot();
                     const r = await this.executor.forceCloseAll(s.ethPrice);
@@ -253,8 +256,8 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V91 Mom12*\n1 激活\n0 暂停\ny 确认\nn 跳过\ns 状态\nx 强平`); },
-                "/help": async () => { await notifyTG(`📖 *V91 Mom12*\n1 激活\n0 暂停\ny 确认\nn 跳过\ns 状态\nx 强平`); },
+                "h": async () => { await notifyTG(`📖 *V92b 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
+                "/help": async () => { await notifyTG(`📖 *V92b 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
             });
         }, 2000);
     }
@@ -265,7 +268,7 @@ class DollarprinterBot {
         const upMs = Date.now() - this.startTime;
         const upH = Math.floor(upMs / 3600_000), upM = Math.floor((upMs % 3600_000) / 60_000);
 
-        let m = `🎯 *V91 Mom12*\n──────────\n`;
+        let m = `🎯 *V92b*\n──────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${upH}h${upM}m\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
@@ -288,10 +291,74 @@ class DollarprinterBot {
         const b = await this.executor.getBalance();
         const upH = Math.floor((Date.now() - this.startTime) / 3600_000);
         await notifyTG(
-            `💓 *V91* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
+            `💓 *V92b* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
             `ETH $${s.ethPrice.toFixed(2)} | $${b.toFixed(2)}\n` +
             `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`,
         );
+    }
+
+    /** 🧠 反思指令: 分析当前6重过滤状态, 3行重点回覆 */
+    private async reflect() {
+        try {
+            // 拉最近48根1h K线
+            const now = Date.now();
+            const url = `${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=1h&startTime=${now - 48 * 3600000}&endTime=${now}&limit=48`;
+            const res = await fetch(url);
+            const data = (await res.json()) as any[][];
+            const kl = data.map(k => ({ o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
+            if (kl.length < 20) { await notifyTG("⚠️ K线不足"); return; }
+
+            const n = kl.length;
+            const price = kl[n - 1].c;
+
+            // RSI14
+            let g = 0, l = 0;
+            for (let i = n - 14; i < n; i++) { const d = kl[i].c - kl[i - 1].c; if (d > 0) g += d; else l += -d; }
+            const rsi = l === 0 ? 100 : 100 - 100 / (1 + g / 14 / (l / 14));
+
+            // ATR14
+            let atr = 0; for (let i = n - 14; i < n; i++) atr += kl[i].h - kl[i].l; atr /= 14;
+
+            // POC(前4h)
+            let maxV = 0, pocP = 0;
+            for (let i = n - 4; i < n; i++) { if (kl[i].v > maxV) { maxV = kl[i].v; pocP = (kl[i].h + kl[i].l + kl[i].c) / 3; } }
+            let maxV2 = 0, pocP2 = 0;
+            for (let i = n - 8; i < n - 4; i++) { if (kl[i].v > maxV2) { maxV2 = kl[i].v; pocP2 = (kl[i].h + kl[i].l + kl[i].c) / 3; } }
+            const pocSlope = pocP - pocP2;
+
+            // 日振幅已用%
+            const todayBars = kl.slice(-Math.min(n, 24));
+            const dayHi = Math.max(...todayBars.map(k => k.h));
+            const dayLo = Math.min(...todayBars.map(k => k.l));
+            const dayRange = dayHi - dayLo;
+
+            // 过去2天涨跌
+            const chg48h = kl[n - 1].c - kl[Math.max(0, n - 48)].c;
+
+            // 6重过滤状态
+            const pocDir = pocSlope > 5 ? "↑多" : pocSlope < -5 ? "↓空" : "→不明";
+            const rsiStatus = rsi > 60 ? "⚠️超买" : rsi < 40 ? "⚠️超卖" : "✅中性";
+            const atrStatus = atr < 3 ? "⚠️太低" : "✅" + atr.toFixed(0);
+            const pocChase = Math.abs(pocSlope) > 50 ? "⚠️不追" : "✅";
+            const fatigue = Math.abs(chg48h) > 150 ? "⚠️疲劳" : "✅";
+
+            // 下个窗口
+            const utc8H = (new Date().getUTCHours() + 8) % 24;
+            const nextWin = utc8H < 8 ? "08" : utc8H < 15 ? "15" : utc8H < 22 ? "22" : "明08";
+
+            // 判断: 能不能做?
+            const canTrade = rsi >= 40 && rsi <= 60 && atr >= 3 && Math.abs(pocSlope) <= 50 && Math.abs(chg48h) <= 150 && pocSlope !== 0;
+            const action = !canTrade ? "⏸️观望" : pocSlope > 5 ? "📈做多" : "📉做空";
+
+            // 3行重点
+            const line1 = `🧠 ETH $${price.toFixed(0)} RSI=${rsi.toFixed(0)}${rsiStatus} ATR=${atrStatus}`;
+            const line2 = `POC${pocDir}(${pocSlope >= 0 ? "+" : ""}${pocSlope.toFixed(0)}) ${pocChase} 48h${chg48h >= 0 ? "+" : ""}${chg48h.toFixed(0)}pt ${fatigue}`;
+            const line3 = `${nextWin}窗→${action} 日振${dayRange.toFixed(0)}pt`;
+
+            await notifyTG(`${line1}\n${line2}\n${line3}`);
+        } catch (e) {
+            await notifyTG(`⚠️ 反思失败: ${e}`);
+        }
     }
 }
 
