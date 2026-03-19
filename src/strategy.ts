@@ -141,12 +141,16 @@ export class Mom12Strategy {
         return this.klines.length >= 2 ? this.klines[this.klines.length - 2].v : 0;
     }
 
-    /** POC方向: 前4小时vs前8-4小时的成交量最集中价差异 */
-    private pocSlope(): number {
-        const n = this.klines.length;
-        if (n < 96) return 0; // 需要8小时数据(96根5m)
+    /** POC方向: 用 WS 实时成交 Volume Profile (由 bitunix-ws.ts 计算)
+     *  回退: 如果 WS POC 还没数据, 用 K线近似版 */
+    private pocSlope(wsPocSlope?: number): number {
+        // 优先用 WS 实时 Volume Profile POC
+        if (wsPocSlope !== undefined && wsPocSlope !== 0) return wsPocSlope;
 
-        // 最近4小时(48根)POC
+        // 回退: K线近似版 (启动头4小时 WS 还没攒够数据时用)
+        const n = this.klines.length;
+        if (n < 96) return 0;
+
         let maxV1 = 0, poc1 = 0;
         for (let i = n - 48; i < n; i++) {
             if (this.klines[i].v > maxV1) {
@@ -156,7 +160,6 @@ export class Mom12Strategy {
             }
         }
 
-        // 前4-8小时(48根)POC
         let maxV2 = 0, poc2 = 0;
         for (let i = n - 96; i < n - 48; i++) {
             if (this.klines[i].v > maxV2) {
@@ -210,8 +213,8 @@ export class Mom12Strategy {
         return last2.reduce((s, d) => s + d.change, 0);
     }
 
-    /** V93 六重共振入场 */
-    evaluate(): Mom12Signal | null {
+    /** V93 六重共振入场 (wsPocSlope: WS实时POC位移, 由main传入) */
+    evaluate(wsPocSlope?: number): Mom12Signal | null {
         this.scanCount++;
         const now = Date.now();
         if (now - this.lastTradeTs < COOLDOWN_MS) return null;
@@ -246,7 +249,7 @@ export class Mom12Strategy {
         const rsi = this.rsi14();
         const atr = this.atr14();
         const volR = this.curVol() / this.avgVol();
-        const pocSl = this.pocSlope();
+        const pocSl = this.pocSlope(wsPocSlope); // V92: 优先用WS实时POC
         const recentChg = this.recentChange();
         const wn = activeWindow.name;
 

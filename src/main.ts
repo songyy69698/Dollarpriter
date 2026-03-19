@@ -151,7 +151,8 @@ class DollarprinterBot {
             }
 
             this.signalNotified = false;
-            this.strategy.evaluate();
+            const snap = this.ws.getSnapshot();
+            this.strategy.evaluate(snap.ethPOCSlope); // V92: 传入WS实时POC位移
 
         }, 10_000); // 每10秒检查 (K线5分钟更新一次)
     }

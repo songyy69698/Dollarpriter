@@ -66,12 +66,19 @@ export interface CausalSnapshot {
     ethRecentDeltaDirs: number[];
 
     // ── V75 能量 vs 阻力 ──
-    ethL1AskVol: number;         // ETH 首档卖牆量
-    ethL1BidVol: number;         // ETH 首档买牆量
-    ethInstantVol: number;       // ETH 2s 瞬时成交量
-    ethBidWallChange: number;    // ETH 买盘牆变化率 (-0.6 = 下降60%)
-    ethLastPrice: number;        // ETH 上一笔成交价 (吸收检测用)
-    ethAvgVol: number;           // V80: ETH 平均成交量 (吸能归一化)
+    ethL1AskVol: number;
+    ethL1BidVol: number;
+    ethInstantVol: number;
+    ethBidWallChange: number;
+    ethLastPrice: number;
+    ethAvgVol: number;
+
+    // ── V92 POC Volume Profile ──
+    ethPOC: number;              // 当前4h POC价格
+    ethPrevPOC: number;          // 前4h POC价格
+    ethPOCSlope: number;         // POC位移 (current - previous)
+    ethPOCDir: "long" | "short" | "";  // POC方向 (>5pt多 <-5pt空)
+    ethVPNodeCount: number;      // Volume Profile 活跃价格层级数
 
     // ── 延迟诊断 ──
     wsLatencyMs: number;
@@ -114,8 +121,21 @@ class SymbolTracker {
     deltaDirRing: number[] = [];
     readonly DELTA_DIR_MAX = 10;
 
+    // ═══ V92 Volume Profile POC ═══
+    // 真实成交数据 bin=1.0pt, 滚动4h窗口
+    private readonly VP_BIN_SIZE = 1.0;           // 价格分桶 1.0pt
+    private readonly VP_WINDOW_MS = 4 * 3600_000; // 4小时滚动窗口
+    private vpTradeBuffer: { ts: number; binPrice: number; vol: number }[] = [];
+    private vpVolumeMap = new Map<number, number>(); // binPrice → totalVol
+    private vpPOC = 0;           // 当前4h POC价格
+    private vpPrevPOC = 0;       // 前4h POC (每4h更新一次)
+    private vpLastRotateTs = 0;  // 上次轮换 prevPOC 的时间
+    private vpLastCleanTs = 0;   // 上次清理的时间
+
     constructor(symbol: string) {
         this.symbol = symbol;
+        this.vpLastRotateTs = Date.now();
+        this.vpLastCleanTs = Date.now();
     }
 
     getDelta(): { buyDelta: number; sellDelta: number } {
@@ -221,7 +241,71 @@ class SymbolTracker {
             if (this.deltaDirRing.length > this.DELTA_DIR_MAX) this.deltaDirRing.shift();
 
             this.lastPrice = tradePrice;
+
+            // ═══ V92 Volume Profile: 每笔成交加入分桶 ═══
+            const binPrice = Math.round(tradePrice / this.VP_BIN_SIZE) * this.VP_BIN_SIZE;
+            this.vpTradeBuffer.push({ ts: now, binPrice, vol: qty });
+            this.vpVolumeMap.set(binPrice, (this.vpVolumeMap.get(binPrice) || 0) + qty);
         }
+
+        // 每60秒清理超过4h的旧成交 + 重算POC
+        if (now - this.vpLastCleanTs > 60_000) {
+            this.vpCleanAndRecalc(now);
+            this.vpLastCleanTs = now;
+        }
+    }
+
+    // ═══ V92 Volume Profile 清理+重算 ═══
+    private vpCleanAndRecalc(now: number) {
+        const cutoff = now - this.VP_WINDOW_MS;
+
+        // 清理超过4h的旧成交
+        const oldLen = this.vpTradeBuffer.length;
+        if (oldLen > 0 && this.vpTradeBuffer[0].ts < cutoff) {
+            // 找到第一个在窗口内的索引
+            let idx = 0;
+            while (idx < oldLen && this.vpTradeBuffer[idx].ts < cutoff) idx++;
+
+            // 从 volumeMap 中减去被清理的成交量
+            for (let i = 0; i < idx; i++) {
+                const t = this.vpTradeBuffer[i];
+                const cur = this.vpVolumeMap.get(t.binPrice) || 0;
+                const newVal = cur - t.vol;
+                if (newVal <= 0.001) this.vpVolumeMap.delete(t.binPrice);
+                else this.vpVolumeMap.set(t.binPrice, newVal);
+            }
+            this.vpTradeBuffer = this.vpTradeBuffer.slice(idx);
+        }
+
+        // 计算当前 POC (成交量最大的价格层级)
+        let maxVol = 0, poc = 0;
+        for (const [binP, vol] of this.vpVolumeMap) {
+            if (vol > maxVol) { maxVol = vol; poc = binP; }
+        }
+        this.vpPOC = poc;
+
+        // 每4h轮换 prevPOC
+        if (now - this.vpLastRotateTs >= this.VP_WINDOW_MS) {
+            this.vpPrevPOC = this.vpPOC;
+            this.vpLastRotateTs = now;
+        }
+        // 首次: 如果 prevPOC 为0且数据足够(>1h), 用当前POC初始化
+        if (this.vpPrevPOC === 0 && this.vpTradeBuffer.length > 100) {
+            this.vpPrevPOC = this.vpPOC;
+        }
+    }
+
+    /** V92 POC 数据 */
+    getPOCData(): { poc: number; prevPOC: number; slope: number; dir: "long" | "short" | ""; nodeCount: number } {
+        const slope = this.vpPOC - this.vpPrevPOC;
+        const dir = slope > 5 ? "long" as const : slope < -5 ? "short" as const : "" as const;
+        return {
+            poc: this.vpPOC,
+            prevPOC: this.vpPrevPOC,
+            slope,
+            dir,
+            nodeCount: this.vpVolumeMap.size,
+        };
     }
 
     handleDepth(depthData: any) {
@@ -431,6 +515,12 @@ export class BitunixWSEngine {
             ethBidWallChange: this.eth.getBidWallChange(),
             ethLastPrice: this.eth.lastPrice,
             ethAvgVol: this.eth.getAvgVol(),
+
+            // V92 POC Volume Profile
+            ...(() => {
+                const p = this.eth.getPOCData();
+                return { ethPOC: p.poc, ethPrevPOC: p.prevPOC, ethPOCSlope: p.slope, ethPOCDir: p.dir, ethVPNodeCount: p.nodeCount };
+            })(),
 
             // 延迟诊断
             wsLatencyMs: this._wsLatency,
