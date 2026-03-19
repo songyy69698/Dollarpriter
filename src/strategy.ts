@@ -1,25 +1,28 @@
 /**
- * 🧠 V93 六重共振策略
- * ═══════════════════════════════════════════════════════
- * 规格书: docs/conversations/06_日内交易系统规格书.md
- *
- * 六重过滤 (全绿才进场):
- *   1. POC方向(前4h成交量最集中价走向)
- *   2. RSI位置(做多<60 / 做空>40)
+ * 🧠 V92 六重共振 + 动态风控策略
+ * ═════════════════════════════════════════════════════
+ * 六重过滤 + V92新增:
+ *   1. POC方向(实时WS Volume Profile)
+ *   2. RSI(30<RSI<70 + 做多<60 做空>40)
  *   3. 成交量(不缩量>=0.6x)
- *   4. ATR(>3,有波动)
+ *   4. ATR(>=8pt,有波动)
  *   5. K棒结构(无反转形态)
  *   6. 追顶/疲劳(POC>50不追+连涨>150不追)
+ *   7. Funding Rate(>0.05%不追多) [NEW]
+ *   8. 日振>80% 非22窗强制反转 [NEW]
  *
- * 进场: 回调进(窗口前20min找回调点)
- * 出场: 窗口收盘平仓 + 硬SL=8保护
- *
- * 回测: 20天14笔79%胜+$591 | 本周4笔100%胜+$158
+ * 出场: 动态SL(1.0×15mATR,15-20pt) + TP(1:1.5RR)
+ * 仓位: 每单风险≤账户1%
  */
 
 import {
     TRADE_WINDOWS, ETH_SYMBOL, COOLDOWN_MS, BINANCE_BASE,
-    ATR_BAN_THRESHOLD, MARGIN_PER_TRADE, LEVERAGE,
+    ATR_BAN_THRESHOLD, LEVERAGE,
+    ATR_MIN, RSI_FLOOR, RSI_CEILING,
+    FUNDING_LONG_MAX, BINANCE_FAPI,
+    DAY_RANGE_REVERSAL_PCT,
+    SL_ATR_MULT, SL_MIN_PT, SL_MAX_PT,
+    TP_RR_RATIO, RISK_PCT, POS_SIZE_LEVERAGE,
 } from "./config";
 
 function log(msg: string) {
@@ -36,7 +39,11 @@ export interface Mom12Signal {
     windowName: string;
     momentum: number;
     volRatio: number;
-    windowEndTs: number; // 窗口结束时间戳 → executor用来定时平仓
+    windowEndTs: number;
+    // V92 动态风控
+    slPt: number;       // 动态SL (ATR计算)
+    tpPt: number;       // 动态TP (SL×1.5)
+    dynamicQty: number; // 1%风险仓位
 }
 
 export type CausalSignal = Mom12Signal;
@@ -60,6 +67,14 @@ export class Mom12Strategy {
 
     // 记忆: 过去2天涨跌
     private dayChanges: { date: string; change: number }[] = [];
+
+    // V92 Funding Rate 缓存
+    private fundingRate = 0;
+    private fundingTs = 0;
+
+    // V92 15m ATR 缓存 (动态SL用)
+    private klines15m: K5m[] = [];
+    private lastFetch15mTs = 0;
 
     getScanCount() { return this.scanCount; }
     get pendingSignal() { return this._pendingSignal; }
@@ -105,11 +120,16 @@ export class Mom12Strategy {
                 const k = this.klines[this.klines.length - 2];
                 const rsi = this.rsi14();
                 const poc = this.pocSlope();
-                log(`📊 V93 | $${k.c.toFixed(2)} | RSI=${rsi.toFixed(0)} | POC${poc >= 0 ? "+" : ""}${poc.toFixed(0)} | ATR=${this.atr14().toFixed(1)}`);
+                log(`📊 V92 | $${k.c.toFixed(2)} | RSI=${rsi.toFixed(0)} | POC${poc >= 0 ? "+" : ""}${poc.toFixed(0)} | ATR=${this.atr14().toFixed(1)} | FR=${(this.fundingRate * 100).toFixed(3)}%`);
             }
         } catch (e) {
             log(`⚠️ K线拉取失败: ${e}`);
         }
+
+        // V92: 拉取 15m K线 (动态SL用)
+        await this.refresh15mKlines();
+        // V92: 拉取 Funding Rate
+        await this.refreshFundingRate();
     }
 
     // ═══ 指标 (全部用倒数第二根已完成K线) ═══
@@ -193,6 +213,79 @@ export class Mom12Strategy {
         return reverseCount < 2;
     }
 
+    // ═══ V92 新增方法 ═══
+
+    /** V92: 拉取 15m K线 (动态SL用 ATR14×15m) */
+    private async refresh15mKlines() {
+        const now = Date.now();
+        if (now - this.lastFetch15mTs < 890_000) return; // ~15min
+        this.lastFetch15mTs = now;
+        try {
+            const start = now - 30 * 15 * 60_000; // 30根 (7.5h)
+            const url = `${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=15m&startTime=${start}&endTime=${now}&limit=30`;
+            const res = await fetch(url);
+            if (!res.ok) return;
+            const data = (await res.json()) as any[][];
+            this.klines15m = data.map(k => ({
+                ts: k[0] as number, o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5],
+            }));
+        } catch (e) {
+            log(`⚠️ 15m K线拉取失败: ${e}`);
+        }
+    }
+
+    /** V92: 15m ATR(14) → 动态SL */
+    private atr15m(): number {
+        const n = this.klines15m.length;
+        if (n < 16) return 15; // 回退: 还没数据就用默认15pt
+        let s = 0;
+        for (let i = n - 15; i < n - 1; i++) s += this.klines15m[i].h - this.klines15m[i].l;
+        return s / 14;
+    }
+
+    /** V92: 拉取 Funding Rate (Binance FAPI) */
+    private async refreshFundingRate() {
+        const now = Date.now();
+        if (now - this.fundingTs < 300_000) return; // 5min一次
+        this.fundingTs = now;
+        try {
+            const url = `${BINANCE_FAPI}/fapi/v1/premiumIndex?symbol=ETHUSDT`;
+            const res = await fetch(url);
+            if (!res.ok) return;
+            const data = (await res.json()) as any;
+            this.fundingRate = +(data.lastFundingRate || 0);
+        } catch (e) {
+            log(`⚠️ Funding Rate 拉取失败: ${e}`);
+        }
+    }
+
+    /** V92: 当日已用振幅占ATR比例 (>0.8 = 超过80%) */
+    private getDayRangePct(): number {
+        const n = this.klines.length;
+        if (n < 48) return 0; // 不够一天数据
+
+        // 找今天 UTC+8 0:00 开始的K线
+        const now = Date.now();
+        const todayStart = new Date(now + 8 * 3600000);
+        todayStart.setUTCHours(-8, 0, 0, 0); // UTC+8的0:00
+        const startTs = todayStart.getTime();
+
+        let hi = -Infinity, lo = Infinity;
+        for (const k of this.klines) {
+            if (k.ts < startTs) continue;
+            hi = Math.max(hi, k.h);
+            lo = Math.min(lo, k.l);
+        }
+        if (hi <= lo) return 0;
+
+        // 用ATR14估算"典型日振幅" → 已用%
+        const atr = this.atr14();
+        if (atr <= 0) return 0;
+        // 日振幅 ≈ ATR×12 (5m K线 * 12 = 1h, * 24h = ATR日估计)
+        const typicalDayRange = atr * 12;
+        return (hi - lo) / typicalDayRange;
+    }
+
     /** 更新过去几天的涨跌记忆 */
     private updateDayChanges() {
         const days: Record<string, { open: number; close: number }> = {};
@@ -213,8 +306,8 @@ export class Mom12Strategy {
         return last2.reduce((s, d) => s + d.change, 0);
     }
 
-    /** V93 六重共振入场 (wsPocSlope: WS实时POC位移, 由main传入) */
-    evaluate(wsPocSlope?: number): Mom12Signal | null {
+    /** V92 六重+共振入场 (wsPocSlope: WS实时POC位移, 由main传入; balance: 账户余额) */
+    evaluate(wsPocSlope?: number, balance?: number): Mom12Signal | null {
         this.scanCount++;
         const now = Date.now();
         if (now - this.lastTradeTs < COOLDOWN_MS) return null;
@@ -244,47 +337,62 @@ export class Mom12Strategy {
             return d.getTime();
         })();
 
-        // ═══ 六重过滤 ═══
+        // ═══ 指标计算 ═══
         const price = this.klines[this.klines.length - 2].c;
         const rsi = this.rsi14();
         const atr = this.atr14();
         const volR = this.curVol() / this.avgVol();
-        const pocSl = this.pocSlope(wsPocSlope); // V92: 优先用WS实时POC
+        const pocSl = this.pocSlope(wsPocSlope);
         const recentChg = this.recentChange();
         const wn = activeWindow.name;
 
         const filters: string[] = [];
 
-        // 1. POC方向
+        // ═══ 1. POC方向 ═══
         let dir: "long" | "short" | "" = "";
         if (pocSl > 5) dir = "long";
         else if (pocSl < -5) dir = "short";
         else { this.logSkip(wn, "POC不明"); return null; }
 
-        // 2. RSI
-        const rsiOk = (dir === "long" && rsi < 60) || (dir === "short" && rsi > 40);
-        if (!rsiOk) filters.push(`RSI=${rsi.toFixed(0)}`);
+        // ═══ 2. RSI (V92: 30-70范围 + 方向过滤) ═══
+        if (rsi < RSI_FLOOR || rsi > RSI_CEILING) {
+            filters.push(`RSI=${rsi.toFixed(0)}超极端`);
+        } else {
+            const rsiOk = (dir === "long" && rsi < 60) || (dir === "short" && rsi > 40);
+            if (!rsiOk) filters.push(`RSI=${rsi.toFixed(0)}`);
+        }
 
-        // 3. 量
+        // ═══ 3. 量 ═══
         const volOk = volR >= 0.6;
         if (!volOk) filters.push(`量${volR.toFixed(1)}x`);
 
-        // 4. ATR
-        const atrOk = atr >= 3;
-        if (!atrOk) filters.push(`ATR=${atr.toFixed(1)}`);
+        // ═══ 4. ATR (V92: >=8pt) ═══
+        const atrOk = atr >= ATR_MIN;
+        if (!atrOk) filters.push(`ATR=${atr.toFixed(1)}<${ATR_MIN}`);
 
-        // 5. K棒
+        // ═══ 5. K棒 ═══
         const barOk = this.barStructureOk(dir);
         if (!barOk) filters.push("K棒反转");
 
-        // 6. 追顶/疲劳
-        let chaseOk = true;
-        if (dir === "long" && pocSl > 50) { chaseOk = false; filters.push(`POC+${pocSl.toFixed(0)}追顶`); }
-        if (dir === "short" && pocSl < -50) { chaseOk = false; filters.push(`POC${pocSl.toFixed(0)}追底`); }
+        // ═══ 6. 追顶/疲劳 ═══
+        if (dir === "long" && pocSl > 50) filters.push(`POC+${pocSl.toFixed(0)}追顶`);
+        if (dir === "short" && pocSl < -50) filters.push(`POC${pocSl.toFixed(0)}追底`);
+        if (dir === "long" && recentChg > 150 && rsi > 55) filters.push("连涨疲劳");
+        if (dir === "short" && recentChg < -150 && rsi < 45) filters.push("连跌疲劳");
 
-        let fatigueOk = true;
-        if (dir === "long" && recentChg > 150 && rsi > 55) { fatigueOk = false; filters.push("连涨疲劳"); }
-        if (dir === "short" && recentChg < -150 && rsi < 45) { fatigueOk = false; filters.push("连跌疲劳"); }
+        // ═══ 7. V92 Funding Rate ═══
+        if (dir === "long" && this.fundingRate > FUNDING_LONG_MAX) {
+            filters.push(`FR=${(this.fundingRate * 100).toFixed(3)}%贵`);
+        }
+
+        // ═══ 8. V92 日振>80% 反转模式 ═══
+        const dayRange = this.getDayRangePct();
+        if (dayRange > DAY_RANGE_REVERSAL_PCT && wn !== "22窗口") {
+            // 日振已超>80%, 非22窗 → 强制反转方向
+            const origDir = dir;
+            dir = dir === "long" ? "short" : "long";
+            log(`🔄 日振${(dayRange * 100).toFixed(0)}%>反转! ${origDir}→${dir}`);
+        }
 
         // ═══ 全绿检查 ═══
         if (filters.length > 0) {
@@ -292,9 +400,19 @@ export class Mom12Strategy {
             return null;
         }
 
-        // ═══ 生成信号 ═══
-        const qty = (MARGIN_PER_TRADE * LEVERAGE) / price;
-        const reason = `📡 ${wn} ${dir === "long" ? "📈做多" : "📉做空"} 6绿全亮 | POC${pocSl >= 0 ? "+" : ""}${pocSl.toFixed(0)} RSI=${rsi.toFixed(0)} ATR=${atr.toFixed(1)} V=${volR.toFixed(1)}x`;
+        // ═══ V92 动态SL/TP/仓位 ═══
+        const atr15m = this.atr15m();
+        const slPt = Math.max(SL_MIN_PT, Math.min(SL_MAX_PT, SL_ATR_MULT * atr15m));
+        const tpPt = slPt * TP_RR_RATIO;
+
+        // 动态仓位: qty = (balance × 1%) / (SL_pt × price / leverage)
+        const bal = balance || 5000;
+        const riskU = bal * RISK_PCT;           // 最多亏 $50 (5000×1%)
+        const dynamicQty = riskU / (slPt * (price / POS_SIZE_LEVERAGE));
+        // clamp: 最小0.01 ETH, 最大5 ETH
+        const qty = Math.max(0.01, Math.min(5.0, Math.floor(dynamicQty * 100) / 100));
+
+        const reason = `📡 ${wn} ${dir === "long" ? "📈做多" : "📉做空"} 全绿 | POC${pocSl >= 0 ? "+" : ""}${pocSl.toFixed(0)} RSI=${rsi.toFixed(0)} ATR=${atr.toFixed(1)} V=${volR.toFixed(1)}x | SL=${slPt.toFixed(1)} TP=${tpPt.toFixed(1)} Q=${qty.toFixed(2)}ETH`;
 
         const signal: Mom12Signal = {
             side: dir, price, qty, reason,
@@ -303,6 +421,7 @@ export class Mom12Strategy {
             momentum: pocSl,
             volRatio: volR,
             windowEndTs,
+            slPt, tpPt, dynamicQty: qty,
         };
 
         this.lastWindowSignal = activeWindow.name;

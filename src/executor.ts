@@ -1,14 +1,14 @@
 /**
- * ⚡ Bitunix 执行器 — V90 混合止盈
+ * ⚡ Bitunix 执行器 — V92 动态SL/TP + 保本跟踪
  * ═══════════════════════════════════════════
- * MARKET 入场 + SL→保本→跟踪 出场
+ * MARKET 入场 + 动态SL(ATR) + TP(1:1.5RR) + 保本12+3 + 跟踪10
  */
 
 import {
     BITUNIX_BASE, SYMBOL, ETH_SYMBOL, LEVERAGE,
     INITIAL_SL_PT, BREAKEVEN_PT, BREAKEVEN_SL_OFFSET, TRAILING_PT,
-    TAKER_FEE, SYMBOL_PRECISION,
-    MIN_HOLD_MS,
+    TAKER_FEE, SYMBOL_PRECISION, TP_RR_RATIO,
+    MIN_HOLD_MS, HOLD_EXTEND_PT,
 } from "./config";
 
 function log(msg: string) {
@@ -43,9 +43,13 @@ export class BitunixExecutor {
 
     tradeLog: any[] = [];
 
-    // V90 混合止盈状态
-    breakevenTriggered = false;    // 保本线已触发
-    bestProfitPt = 0;             // 最大浮盈 (pt)
+    // V92 动态风控状态
+    breakevenTriggered = false;
+    bestProfitPt = 0;
+    dynamicSlPt = INITIAL_SL_PT;   // 动态SL (ATR计算)
+    dynamicTpPt = 0;               // 动态TP (SL×1.5)
+    private tpOrderId = "";         // TP挂单ID
+    currentWindowName = "";         // 当前窗口名
 
     // 延迟诊断
     lastEntryMs = 0;
@@ -155,9 +159,12 @@ export class BitunixExecutor {
     async atomicEntry(
         side: "long" | "short",
         currentPrice: number,
-        qty: number,               // V80.3: 直接 ETH 数量 (1.5/3.0/5.0)
+        qty: number,
         targetSymbol: string = SYMBOL,
         onDepthFail?: (msg: string) => Promise<void>,
+        slPt?: number,             // V92: 动态SL
+        tpPt?: number,             // V92: 动态TP
+        windowName?: string,       // V92: 窗口名 (延仓用)
     ): Promise<boolean> {
         if (this.inPosition || this._entering) return false;
 
@@ -245,10 +252,15 @@ export class BitunixExecutor {
         this.breakevenTriggered = false;
         this.bestProfitPt = 0;
 
-        // Atomic SL — 8pt STOP_MARKET
+        // V92: 存储动态SL/TP
+        this.dynamicSlPt = slPt || INITIAL_SL_PT;
+        this.dynamicTpPt = tpPt || (this.dynamicSlPt * TP_RR_RATIO);
+        this.currentWindowName = windowName || "";
+
+        // Atomic SL — 动态SL STOP_MARKET
         const slPrice = side === "long"
-            ? actualPrice - INITIAL_SL_PT
-            : actualPrice + INITIAL_SL_PT;
+            ? actualPrice - this.dynamicSlPt
+            : actualPrice + this.dynamicSlPt;
         this.currentSlPrice = slPrice;
 
         const slT0 = performance.now();
@@ -257,10 +269,22 @@ export class BitunixExecutor {
         );
         this.lastSlMs = Math.round(performance.now() - slT0);
 
-        if (slOk) log(`🛡️ SL: ${slPrice.toFixed(prec.price)} (-${INITIAL_SL_PT}pt) [${this.lastSlMs}ms]`);
+        if (slOk) log(`🛡️ SL: ${slPrice.toFixed(prec.price)} (-${this.dynamicSlPt.toFixed(1)}pt) [${this.lastSlMs}ms]`);
         else log("⚠️ SL 挂单失败!");
 
-        // ═══ 3. SL Watchdog: 500ms 内确认 SL 存在 ═══
+        // V92: TP 挂单 — TAKE_PROFIT_MARKET
+        if (this.dynamicTpPt > 0) {
+            const tpPrice = side === "long"
+                ? actualPrice + this.dynamicTpPt
+                : actualPrice - this.dynamicTpPt;
+            const tpOk = await this.placeTakeProfitMarket(
+                targetSymbol, side === "long" ? "SELL" : "BUY", actualQty, tpPrice, prec,
+            );
+            if (tpOk) log(`🎯 TP: ${tpPrice.toFixed(prec.price)} (+${this.dynamicTpPt.toFixed(1)}pt)`);
+            else log("⚠️ TP 挂单失败!");
+        }
+
+        // SL Watchdog
         this.slWatchdog(targetSymbol, actualQty, side, actualPrice, prec);
 
         return true;
@@ -294,8 +318,8 @@ export class BitunixExecutor {
                 log(`🚨 Watchdog: 500ms内未发现SL! 重试挂单...`);
                 const closeSide = side === "long" ? "SELL" : "BUY";
                 const slPrice = side === "long"
-                    ? entryPrice - INITIAL_SL_PT
-                    : entryPrice + INITIAL_SL_PT;
+                    ? entryPrice - this.dynamicSlPt
+                    : entryPrice + this.dynamicSlPt;
                 const retryOk = await this.placeStopMarket(sym, closeSide, qty, slPrice, prec);
                 if (retryOk) {
                     log(`✅ Watchdog: SL 重试成功`);
@@ -334,6 +358,30 @@ export class BitunixExecutor {
         return false;
     }
 
+    // ═══ V92 TAKE_PROFIT_MARKET ═══
+    private async placeTakeProfitMarket(
+        symbol: string, closeSide: string, qty: number, triggerPrice: number,
+        prec: { qty: number; price: number },
+    ): Promise<boolean> {
+        const data: Record<string, string> = {
+            symbol,
+            side: closeSide,
+            tradeSide: "CLOSE",
+            orderType: "TAKE_PROFIT_MARKET",
+            qty: qty.toFixed(prec.qty),
+            triggerPrice: triggerPrice.toFixed(prec.price),
+            stopType: "LAST",
+        };
+        if (this.positionId) data.positionId = this.positionId;
+
+        const result = await this.postOrder(data);
+        if (result) {
+            this.tpOrderId = result?.orderId || result?.order_id || "";
+            return true;
+        }
+        return false;
+    }
+
     // ═══════════════════════════════════════════════
     // V90 混合出场: SL → 保本 → 跟踪
     // ═══════════════════════════════════════════════
@@ -355,9 +403,9 @@ export class BitunixExecutor {
         // 更新最大浮盈
         if (pnlPt > this.bestProfitPt) this.bestProfitPt = pnlPt;
 
-        // ═══ Layer 1: 硬止损 — 8pt ═══
-        if (pnlPt <= -INITIAL_SL_PT) {
-            reason = `📉 硬止损: ${pnlPt.toFixed(prec.price)}pt (SL=${INITIAL_SL_PT}pt)`;
+        // ═══ Layer 1: 硬止损 — 动态SL ═══
+        if (pnlPt <= -this.dynamicSlPt) {
+            reason = `📉 硬止损: ${pnlPt.toFixed(prec.price)}pt (SL=${this.dynamicSlPt.toFixed(1)}pt)`;
         }
 
         // ═══ 最短持仓 5s（硬止损除外）═══
@@ -695,6 +743,10 @@ export class BitunixExecutor {
         this.breakevenTriggered = false;
         this.bestProfitPt = 0;
         this.highSlippage = false;
+        this.dynamicSlPt = INITIAL_SL_PT;
+        this.dynamicTpPt = 0;
+        this.tpOrderId = "";
+        this.currentWindowName = "";
     }
 
     private logTrade(reason: string, pnlPt: number, netPnlU: number) {

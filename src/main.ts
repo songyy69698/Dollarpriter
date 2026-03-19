@@ -1,10 +1,10 @@
 /**
- * 🎯 Dollarprinter V93 — 六重共振策略
- * ═══════════════════════════════════════════════════
- * 回测: 20天14笔79%胜+$591 | 本周4笔100%胜+$158
- * 入场: POC+RSI+量+ATR+K棒+疲劳 全绿 + 回调进
- * 出场: 窗口收盘平仓 + 硬SL=8保护
- * 模式: 信号→CEO确认→5ETH | 不回→自动3ETH
+ * 🎯 Dollarprinter V92 — 六重共振 + 动态风控
+ * ═══════════════════════════════════════════════
+ * 入场: POC+RSI+量+ATR+K棒+疲劳+FR+日振 全绿
+ * 出场: 动态SL(ATR) + TP(1:1.5RR) + 保本12+3 + 跟踪10
+ * 仓位: 每单风险≤1% 动态计算
+ * 模式: 信号→CEO确认→动态仓位 | 不回→自动动态仓位
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -18,6 +18,8 @@ import {
     MAX_DAILY_TRADES, MAX_DAILY_LOSS,
     ETH_SYMBOL, SYMBOL_PRECISION,
     MOM12_THRESHOLD, VOL_MULTIPLIER, BINANCE_BASE,
+    SL_MIN_PT, SL_MAX_PT, TP_RR_RATIO, RISK_PCT,
+    HOLD_EXTEND_PT,
 } from "./config";
 
 function log(msg: string) {
@@ -25,8 +27,6 @@ function log(msg: string) {
     console.log(`${ts} [main] ${msg}`);
 }
 
-const AUTO_QTY = 3.0;       // 不回覆自动开 3ETH
-const CEO_QTY = 5.0;        // CEO确认开 5ETH
 const AUTO_TIMEOUT_MS = 180_000;   // 3分钟
 
 class DollarprinterBot {
@@ -55,10 +55,10 @@ class DollarprinterBot {
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🎯 V91 Mom12 冠军策略");
-        log(`  📊 入场: Mom12>${MOM12_THRESHOLD}pt + 放量×${VOL_MULTIPLIER}`);
-        log(`  🛡️ SL=${INITIAL_SL_PT} → 保本${BREAKEVEN_PT}+1 → 跟踪${TRAILING_PT}`);
-        log(`  💰 $${MARGIN_PER_TRADE}/单 ${LEVERAGE}x | CEO→${CEO_QTY}ETH 自动→${AUTO_QTY}ETH`);
+        log("  🎯 V92 六重共振 + 动态风控");
+        log(`  📊 SL=${SL_MIN_PT}-${SL_MAX_PT}pt(ATR) TP=SL×${TP_RR_RATIO}`);
+        log(`  🛡️ 保本${BREAKEVEN_PT}+3 → 跟踪${TRAILING_PT}`);
+        log(`  💰 风险≤1% | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
         this.ws.start();
@@ -68,11 +68,12 @@ class DollarprinterBot {
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
         await notifyTG(
-            `🎯 *V93 六重共振策略*\n` +
+            `🎯 *V92 六重共振 + 动态风控*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 POC+RSI+ATR+量+K棒+疲劳 全绿进\n` +
-            `🛡️ 窗口收盘平仓 + SL=${INITIAL_SL_PT}pt保护\n` +
-            `⏰ 窗口: 08/15/22 UTC+8\n` +
+            `📊 POC+RSI+ATR+量+K棒+FR+日振 全绿\n` +
+            `🛡️ SL=${SL_MIN_PT}-${SL_MAX_PT}pt(ATR) TP=×${TP_RR_RATIO}\n` +
+            `♠️ 风险≤${(RISK_PCT * 100).toFixed(0)}%/单\n` +
+            `⏰ 窗口: 08/15/19/22 UTC+8\n` +
             `发 *1* 激活 | *r* 反思`,
         );
 
@@ -93,7 +94,7 @@ class DollarprinterBot {
         setInterval(() => this.hourlyReport(), 3600_000);
         setInterval(() => this.dailyReset(), 60_000);
 
-        log("🟢 V91 就绪 — 发 1 激活");
+        log("🟢 V92 就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -130,15 +131,15 @@ class DollarprinterBot {
             const pending = this.strategy.pendingSignal;
             if (pending) {
                 if (this.strategy.ceoApproved) {
-                    log(`✅ CEO 确认! ${CEO_QTY}ETH`);
-                    await this.executeEntry(pending.side, pending.price, CEO_QTY);
+                    log(`✅ CEO 确认! ${pending.dynamicQty}ETH`);
+                    await this.executeEntry(pending);
                     this.strategy.markTraded();
                     return;
                 }
                 if (this.signalNotified && Date.now() - this.signalSentTs >= AUTO_TIMEOUT_MS) {
-                    log(`⏰ 3分钟未回 → 自动${AUTO_QTY}ETH`);
-                    await notifyTG(`⏰ *3分钟未确认 → 自动${AUTO_QTY}ETH*`);
-                    await this.executeEntry(pending.side, pending.price, AUTO_QTY);
+                    log(`⏰ 3分钟未回 → 自动${pending.dynamicQty}ETH`);
+                    await notifyTG(`⏰ *3分钟未确认 → 自动${pending.dynamicQty.toFixed(2)}ETH*`);
+                    await this.executeEntry(pending);
                     this.strategy.markTraded();
                     return;
                 }
@@ -152,14 +153,15 @@ class DollarprinterBot {
 
             this.signalNotified = false;
             const snap = this.ws.getSnapshot();
-            this.strategy.evaluate(snap.ethPOCSlope); // V92: 传入WS实时POC位移
+            const bal = await this.executor.getBalance();
+            this.strategy.evaluate(snap.ethPOCSlope, bal); // V92: 传WS POC + 余额
 
         }, 10_000); // 每10秒检查 (K线5分钟更新一次)
     }
 
     private async sendSignalNotification(sig: Mom12Signal) {
         const msg =
-            `🎯 *V93 六绿全亮*\n` +
+            `🎯 *V92 全绿*\n` +
             `──────────\n` +
             `⏰ ${sig.windowName}\n` +
             `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
@@ -167,23 +169,27 @@ class DollarprinterBot {
             `──────────\n` +
             `POC: ${sig.momentum >= 0 ? "+" : ""}${sig.momentum.toFixed(0)}pt\n` +
             `量: ${sig.volRatio.toFixed(1)}x\n` +
+            `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt\n` +
+            `仓位: ${sig.dynamicQty.toFixed(2)} ETH (1%风险)\n` +
             `──────────\n` +
-            `窗口收盘自动平仓\n` +
-            `回 *y* → ${CEO_QTY}ETH\n` +
-            `3分钟不回 → ${AUTO_QTY}ETH`;
+            `回 *y* → 确认开单\n` +
+            `3分钟不回 → 自动开`;
         await notifyTG(msg);
     }
 
     private windowCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
-    private async executeEntry(side: "long" | "short", price: number, qty: number) {
+    private async executeEntry(sig: Mom12Signal) {
         const s = this.ws.getSnapshot();
-        const livePrice = s.ethPrice > 0 ? s.ethPrice : price;
+        const livePrice = s.ethPrice > 0 ? s.ethPrice : sig.price;
         const prec = SYMBOL_PRECISION[ETH_SYMBOL] || { qty: 3, price: 2 };
-        await notifyTG(`🏁 *${side.toUpperCase()} ETH*\n@ $${livePrice.toFixed(prec.price)} | ${qty}ETH`);
-        const ok = await this.executor.atomicEntry(side, livePrice, qty, ETH_SYMBOL, notifyTG);
+        await notifyTG(`🏁 *${sig.side.toUpperCase()} ETH*\n@ $${livePrice.toFixed(prec.price)} | ${sig.dynamicQty.toFixed(2)}ETH | SL=${sig.slPt.toFixed(1)} TP=${sig.tpPt.toFixed(1)}`);
+        const ok = await this.executor.atomicEntry(
+            sig.side, livePrice, sig.dynamicQty, ETH_SYMBOL, notifyTG,
+            sig.slPt, sig.tpPt, sig.windowName,
+        );
         if (ok) {
-            log(`✅ ${side.toUpperCase()} ${qty} ETH @ ${livePrice.toFixed(prec.price)}`);
+            log(`✅ ${sig.side.toUpperCase()} ${sig.dynamicQty.toFixed(2)} ETH @ ${livePrice.toFixed(prec.price)}`);
             await notifyTG(
                 `📡 *诊断*\n⏱ Entry: ${this.executor.lastEntryMs}ms | SL: ${this.executor.lastSlMs}ms\nSlip: ${this.executor.lastSlippage.toFixed(prec.price)}pt` +
                 (this.executor.highSlippage ? `\n🚨 *HIGH SLIPPAGE*` : ""),
@@ -191,7 +197,7 @@ class DollarprinterBot {
             await Bun.sleep(500);
             await this.executor.syncPositions();
 
-            // ═══ V93: 窗口收盘定时平仓 ═══
+            // ═══ V92: 窗口收盘定时平仓 ═══
             const pending = this.strategy.pendingSignal;
             if (pending?.windowEndTs) {
                 const msToClose = pending.windowEndTs - Date.now();
@@ -246,20 +252,20 @@ class DollarprinterBot {
         let lastId = 0;
         setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V93 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V93 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V92 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V92 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {
                     if (this.strategy.pendingSignal) {
                         this.strategy.approveTrade();
-                        await notifyTG(`✅ *确认! ${CEO_QTY}ETH 即将开单*`);
+                        await notifyTG(`✅ *确认! 即将开单*`);
                     } else { await notifyTG("⚠️ 无待确认信号"); }
                 },
                 "yes": async () => {
                     if (this.strategy.pendingSignal) {
                         this.strategy.approveTrade();
-                        await notifyTG(`✅ *确认! ${CEO_QTY}ETH*`);
+                        await notifyTG(`✅ *确认开单!*`);
                     } else { await notifyTG("⚠️ 无待确认信号"); }
                 },
                 "n": async () => { this.strategy.clearPending(); this.signalNotified = false; await notifyTG("🚫 *跳过*"); },
@@ -287,8 +293,8 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V93 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
-                "/help": async () => { await notifyTG(`📖 *V93 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
+                "h": async () => { await notifyTG(`📖 *V92 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
+                "/help": async () => { await notifyTG(`📖 *V92 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
             });
         }, 2000);
     }
@@ -299,7 +305,7 @@ class DollarprinterBot {
         const upMs = Date.now() - this.startTime;
         const upH = Math.floor(upMs / 3600_000), upM = Math.floor((upMs % 3600_000) / 60_000);
 
-        let m = `🎯 *V93*\n──────────\n`;
+        let m = `🎯 *V92*\n──────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${upH}h${upM}m\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
@@ -322,7 +328,7 @@ class DollarprinterBot {
         const b = await this.executor.getBalance();
         const upH = Math.floor((Date.now() - this.startTime) / 3600_000);
         await notifyTG(
-            `💓 *V93* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
+            `💓 *V92* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
             `ETH $${s.ethPrice.toFixed(2)} | $${b.toFixed(2)}\n` +
             `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`,
         );
