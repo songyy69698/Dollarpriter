@@ -648,7 +648,7 @@ export class BitunixWSEngine {
                         if (latency > this._wsLatencyMax) this._wsLatencyMax = latency;
                         if (latency > 200) {
                             this._highLatencyCount++;
-                            if (this._highLatencyCount <= 5 || this._highLatencyCount % 50 === 0) {
+                            if (this._highLatencyCount <= 3 || this._highLatencyCount % 500 === 0) {
                                 log(`⚠️ High WS Latency: ${latency}ms [${symbol}] (count=${this._highLatencyCount})`);
                             }
                         }
