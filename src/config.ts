@@ -65,8 +65,9 @@ export interface WindowConfig {
     reverseDir?: boolean;  // V92R: 反POC方向
 }
 
-/** V92R: 只开19窗(顺)+22窗(反) */
+/** V92R: 15反+19顺+22反 */
 export const TRADE_WINDOWS: WindowConfig[] = [
+    { name: "15窗口", startHour: 15, startMin: 0, endHour: 16, endMin: 0, reverseDir: true },
     { name: "19窗口", startHour: 19, startMin: 0, endHour: 19, endMin: 30, reverseDir: false },
     { name: "22窗口", startHour: 22, startMin: 0, endHour: 23, endMin: 0, reverseDir: true },
 ];
@@ -96,7 +97,7 @@ export const POS_SIZE_LEVERAGE = 15;        // 仓位计算用15x (保守)
 export const COOLDOWN_MS = 60_000;
 export const MIN_HOLD_MS = 5_000;
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 2;           // V92R: 2窗口最多2单
+export const MAX_DAILY_TRADES = 3;           // V92R: 3窗口最多3单
 export const MAX_DAILY_LOSS = 150;           // V92R: $150 日亏损限制
 
 // ═══════════════════════════════════════
