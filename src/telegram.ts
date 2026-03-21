@@ -12,15 +12,24 @@ function log(msg: string) {
 }
 
 export async function notifyTG(text: string): Promise<void> {
-    if (!TG_BOT_TOKEN || !TG_CHAT_ID) return;
+    if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
+        log(`⚠️ TG 未配置! TOKEN=${TG_BOT_TOKEN ? "有(" + TG_BOT_TOKEN.slice(0, 6) + "...)" : "❌空"} CHAT_ID=${TG_CHAT_ID || "❌空"}`);
+        return;
+    }
     try {
-        await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
+        const res = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ chat_id: TG_CHAT_ID, text, parse_mode: "Markdown" }),
         });
+        const data = await res.json() as any;
+        if (!data.ok) {
+            log(`❌ TG 发送失败: ${JSON.stringify(data).slice(0, 200)}`);
+        } else {
+            log(`✅ TG 发送成功 → chat=${TG_CHAT_ID}`);
+        }
     } catch (e) {
-        log(`发送失败: ${e}`);
+        log(`❌ TG 发送异常: ${e}`);
     }
 }
 
