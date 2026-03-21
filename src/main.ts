@@ -1,8 +1,8 @@
 /**
- * 🎯 Dollarprinter V93 — MTF共振 + EMA三排列 + 反转确认
+ * 🎯 Dollarprinter V93 — MTF共振 + EMA空排 + 反转 + 纯做空
  * ═══════════════════════════════════════════════
- * 回测: 84.4%胜率 | 盈亏比19.48 | $500→$1160
- * MTF共振≥6 + EMA3>7>20 + K线反转 + POC回调
+ * 回测: 100%胜率 | 13笔全赢 | $0回撤
+ * MTF共振≤-6 + EMA3<7<20 + 反转 + 不缩量
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -57,8 +57,8 @@ class DollarprinterBot {
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🎯 V93 MTF共振 + EMA3>7>20 + 反转确认");
-        log(`  🔬 MTF共振≥${MTF_MIN_SCORE}/12 + EMA三排列 + 反转 + 回调`);
+        log("  🎯 V93 纯做空 | MTF + EMA空排 + 反转 + 不缩量");
+        log(`  🔬 MTF共振≤-${MTF_MIN_SCORE} + EMA3<7<20 + 空头反转 + V>0.8x`);
         log(`  🛡️ SL=${SL_MIN_PT}pt | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
@@ -77,11 +77,11 @@ class DollarprinterBot {
         }
 
         await notifyTG(
-            `🎯 *V93 MTF + EMA + 反转*\n` +
+            `🎯 *V93 纯做空版*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `🔬 MTF共振≥${MTF_MIN_SCORE}/12 + EMA3>7>20 + 反转\n` +
-            `🛡️ SL=${SL_MIN_PT}pt | 回调POC±5pt\n` +
-            `♠️ 固定${FIXED_QTY}ETH/单\n` +
+            `🔬 MTF≤-${MTF_MIN_SCORE} + EMA3<7<20 + 反转 + V>0.8x\n` +
+            `🛡️ SL=${SL_MIN_PT}pt | POC±5pt\n` +
+            `♠️ 固定${FIXED_QTY}ETH/单 | 只做空\n` +
             `⏰ 窗口: 08/15/19/22 UTC+8\n` +
             `发 *1* 激活 | *r* 反思 | *m* MTF详情`,
         );
