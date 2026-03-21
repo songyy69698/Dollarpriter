@@ -374,6 +374,7 @@ export class BitunixWSEngine {
     private _wsLatency = 0;
     private _wsLatencySum = 0;
     private _wsLatencyCount = 0;
+    private _debugSampleLogged = false;
     private _wsLatencyMax = 0;
     private _highLatencyCount = 0;
 
@@ -618,15 +619,22 @@ export class BitunixWSEngine {
             // V52.4 延迟诊断: 计算 WS trade 事件延迟
             const tradeList = Array.isArray(data) ? data : [data];
 
-            // 首次 trade: 打印所有字段帮助调试时间戳字段名
-            if (this._wsLatencyCount === 0 && tradeList.length > 0) {
+            // 首次 trade: 打印一次字段样本 (之后不再打印)
+            if (!this._debugSampleLogged && tradeList.length > 0) {
                 const sample = tradeList[0];
-                log(`🔬 [LATENCY-DEBUG] Trade 字段: ${JSON.stringify(Object.keys(sample))} | 样本: ${JSON.stringify(sample).slice(0, 300)}`);
+                log(`🔬 [LATENCY] Trade 字段: ${JSON.stringify(Object.keys(sample))} | 样本: ${JSON.stringify(sample).slice(0, 300)}`);
+                this._debugSampleLogged = true;
             }
 
             for (const t of tradeList) {
-                // 尝试所有可能的时间戳字段名
-                let eventTs = +(t.ts || t.T || t.t || t.time || t.E || t.timestamp || t.tradeTime || 0);
+                // 尝试所有可能的时间戳字段名 (支持 ISO 字符串和数字)
+                let eventTs = 0;
+                const rawTs = t.ts || t.T || t.t || t.time || t.E || t.timestamp || t.tradeTime || 0;
+                if (typeof rawTs === "string" && rawTs.includes("T")) {
+                    eventTs = new Date(rawTs).getTime(); // ISO 字符串
+                } else {
+                    eventTs = +rawTs;
+                }
 
                 // 如果是秒级时间戳 (10位数), 转为毫秒
                 if (eventTs > 0 && eventTs < 1e12) eventTs *= 1000;
