@@ -1,9 +1,9 @@
 /**
- * 🎯 V92 六重共振 + 动态风控
+ * 🎯 V92R 反转策略 — 19顺+22反
  * ═══════════════════════════════════════
- * 入场: POC+RSI+量+ATR+K棒+疲劳 六重过滤
- * 出场: 动态SL(ATR) → 保本12+3 → 跟踪10 + TP(1:1.5RR)
- * 仓位: 每单风险≤账户1% 动态计算
+ * 19窗: 顺POC方向(美股盘前趋势确定)
+ * 22窗: 反POC方向(美股开盘回调)
+ * 回测: $500→$1965 (+293%) 34笔 50%胜
  */
 
 // ═══════════════════════════════════════
@@ -26,9 +26,10 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 // ═══════════════════════════════════════
 // 核心参数
 // ═══════════════════════════════════════
-export const LEVERAGE = 200;                // Bitunix实际杠杆(保持200x可小仓开)
+export const LEVERAGE = 150;                // V92R: 150x
 export const TAKER_FEE = 0.0004;
-export const MARGIN_PER_TRADE = 50;         // 回退用 (动态仓位优先)
+export const MARGIN_PER_TRADE = 50;         // 回退用
+export const FIXED_QTY = 3.0;               // V92R: 固定3ETH
 
 // ═══════════════════════════════════════
 // V92 入场参数 (六重共振)
@@ -61,24 +62,23 @@ export interface WindowConfig {
     startMin: number;
     endHour: number;
     endMin: number;
+    reverseDir?: boolean;  // V92R: 反POC方向
 }
 
-/** CEO 规划的四个交易窗口 (UTC+8) */
+/** V92R: 只开19窗(顺)+22窗(反) */
 export const TRADE_WINDOWS: WindowConfig[] = [
-    { name: "08窗口", startHour: 8, startMin: 0, endHour: 9, endMin: 0 },
-    { name: "15窗口", startHour: 15, startMin: 0, endHour: 16, endMin: 0 },
-    { name: "19窗口", startHour: 19, startMin: 0, endHour: 19, endMin: 30 },  // 美股盘前
-    { name: "22窗口", startHour: 22, startMin: 0, endHour: 23, endMin: 0 },
+    { name: "19窗口", startHour: 19, startMin: 0, endHour: 19, endMin: 30, reverseDir: false },
+    { name: "22窗口", startHour: 22, startMin: 0, endHour: 23, endMin: 0, reverseDir: true },
 ];
 
 // ═══════════════════════════════════════
 // V92 出场: 动态SL(ATR) + TP(1:1.5RR) + 保本12+3 + 跟踪10
 // ═══════════════════════════════════════
-export const SL_ATR_MULT = 1.0;             // SL = 1.0 × 15m ATR(14)
-export const SL_MIN_PT = 15.0;              // SL下限 15pt
-export const SL_MAX_PT = 20.0;              // SL上限 20pt
-export const INITIAL_SL_PT = 15.0;          // 回退固定值 (动态优先)
-export const TP_RR_RATIO = 1.5;             // TP = SL × 1.5 (盈亏比1:1.5)
+export const SL_ATR_MULT = 1.0;
+export const SL_MIN_PT = 20.0;              // V92R: 固定20pt
+export const SL_MAX_PT = 20.0;              // V92R: 固定20pt
+export const INITIAL_SL_PT = 20.0;          // V92R: SL=20固定
+export const TP_RR_RATIO = 0;               // V92R: 不设 TP 让利润跑
 export const BREAKEVEN_PT = 12.0;           // 浮盈 12pt → 移保本
 export const BREAKEVEN_SL_OFFSET = 3.0;     // 保本后 SL = 入场 + 3pt
 export const TRAILING_PT = 10.0;            // 跟踪距离 10pt
@@ -96,8 +96,8 @@ export const POS_SIZE_LEVERAGE = 15;        // 仓位计算用15x (保守)
 export const COOLDOWN_MS = 60_000;
 export const MIN_HOLD_MS = 5_000;
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 4;           // V92: 4窗口最多4单
-export const MAX_DAILY_LOSS = 100;           // V92: $100 日亏损限制
+export const MAX_DAILY_TRADES = 2;           // V92R: 2窗口最多2单
+export const MAX_DAILY_LOSS = 150;           // V92R: $150 日亏损限制
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate
@@ -112,7 +112,7 @@ export const CANDLE_LOOKBACK = 4;
 export const CANDLE_POLL_MS = 30_000;
 export const EFFICIENCY_WINDOW = 100;
 export const AVG_VOL_WINDOW = 200;
-export const ENTRY_QTY = 3.0;              // 向后兼容
+export const ENTRY_QTY = 3.0;              // V92R: 固定3ETH
 
 // ═══════════════════════════════════════
 // Binance API (K线数据用)

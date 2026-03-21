@@ -1,28 +1,18 @@
 /**
- * 🧠 V92 六重共振 + 动态风控策略
+ * 🧠 V92R 反转策略 — 19顺+22反
  * ═════════════════════════════════════════════════════
- * 六重过滤 + V92新增:
- *   1. POC方向(实时WS Volume Profile)
- *   2. RSI(30<RSI<70 + 做多<60 做空>40)
- *   3. 成交量(不缩量>=0.6x)
- *   4. ATR(>=8pt,有波动)
- *   5. K棒结构(无反转形态)
- *   6. 追顶/疲劳(POC>50不追+连涨>150不追)
- *   7. Funding Rate(>0.05%不追多) [NEW]
- *   8. 日振>80% 非22窗强制反转 [NEW]
- *
- * 出场: 动态SL(1.0×15mATR,15-20pt) + TP(1:1.5RR)
- * 仓位: 每单风险≤账户1%
+ * 19窗: 顺POC(美股盘前趋势斩入)
+ * 22窗: 反POC(美股开盘回调反做)
+ * 回测: $500→$1965 (+293%) 34笔 50%胜
+ * SL=20固定 TP=无(让利润跑) 3ETH固定 150x
  */
 
 import {
     TRADE_WINDOWS, ETH_SYMBOL, COOLDOWN_MS, BINANCE_BASE,
-    ATR_BAN_THRESHOLD, LEVERAGE,
-    ATR_MIN, RSI_FLOOR, RSI_CEILING,
-    FUNDING_LONG_MAX, BINANCE_FAPI,
-    DAY_RANGE_REVERSAL_PCT,
-    SL_ATR_MULT, SL_MIN_PT, SL_MAX_PT,
-    TP_RR_RATIO, RISK_PCT, POS_SIZE_LEVERAGE,
+    ATR_BAN_THRESHOLD, LEVERAGE, FIXED_QTY,
+    SL_MIN_PT, SL_MAX_PT, SL_ATR_MULT,
+    TP_RR_RATIO,
+    BINANCE_FAPI,
 } from "./config";
 
 function log(msg: string) {
@@ -354,63 +344,17 @@ export class Mom12Strategy {
         else if (pocSl < -5) dir = "short";
         else { this.logSkip(wn, "POC不明"); return null; }
 
-        // ═══ 2. RSI (V92: 30-70范围 + 方向过滤) ═══
-        if (rsi < RSI_FLOOR || rsi > RSI_CEILING) {
-            filters.push(`RSI=${rsi.toFixed(0)}超极端`);
-        } else {
-            const rsiOk = (dir === "long" && rsi < 60) || (dir === "short" && rsi > 40);
-            if (!rsiOk) filters.push(`RSI=${rsi.toFixed(0)}`);
-        }
-
-        // ═══ 3. 量 ═══
-        const volOk = volR >= 0.6;
-        if (!volOk) filters.push(`量${volR.toFixed(1)}x`);
-
-        // ═══ 4. ATR (V92: >=8pt) ═══
-        const atrOk = atr >= ATR_MIN;
-        if (!atrOk) filters.push(`ATR=${atr.toFixed(1)}<${ATR_MIN}`);
-
-        // ═══ 5. K棒 ═══
-        const barOk = this.barStructureOk(dir);
-        if (!barOk) filters.push("K棒反转");
-
-        // ═══ 6. 追顶/疲劳 ═══
-        if (dir === "long" && pocSl > 50) filters.push(`POC+${pocSl.toFixed(0)}追顶`);
-        if (dir === "short" && pocSl < -50) filters.push(`POC${pocSl.toFixed(0)}追底`);
-        if (dir === "long" && recentChg > 150 && rsi > 55) filters.push("连涨疲劳");
-        if (dir === "short" && recentChg < -150 && rsi < 45) filters.push("连跌疲劳");
-
-        // ═══ 7. V92 Funding Rate ═══
-        if (dir === "long" && this.fundingRate > FUNDING_LONG_MAX) {
-            filters.push(`FR=${(this.fundingRate * 100).toFixed(3)}%贵`);
-        }
-
-        // ═══ 8. V92 日振>80% 反转模式 ═══
-        const dayRange = this.getDayRangePct();
-        if (dayRange > DAY_RANGE_REVERSAL_PCT && wn !== "22窗口") {
-            // 日振已超>80%, 非22窗 → 强制反转方向
+        // ═══ V92R: 窗口反转 ═══
+        if (activeWindow.reverseDir) {
             const origDir = dir;
             dir = dir === "long" ? "short" : "long";
-            log(`🔄 日振${(dayRange * 100).toFixed(0)}%>反转! ${origDir}→${dir}`);
+            log(`🔄 ${wn} 反POC: ${origDir}→${dir} (POC${pocSl >= 0 ? "+" : ""}${pocSl.toFixed(0)})`);
         }
 
-        // ═══ 全绿检查 ═══
-        if (filters.length > 0) {
-            this.logSkip(wn, `${dir.toUpperCase()} [${filters.join(",")}]`);
-            return null;
-        }
-
-        // ═══ V92 动态SL/TP/仓位 ═══
-        const atr15m = this.atr15m();
-        const slPt = Math.max(SL_MIN_PT, Math.min(SL_MAX_PT, SL_ATR_MULT * atr15m));
-        const tpPt = slPt * TP_RR_RATIO;
-
-        // 动态仓位: qty = (balance × 1%) / (SL_pt × price / leverage)
-        const bal = balance || 5000;
-        const riskU = bal * RISK_PCT;           // 最多亏 $50 (5000×1%)
-        const dynamicQty = riskU / (slPt * (price / POS_SIZE_LEVERAGE));
-        // clamp: 最小0.01 ETH, 最大5 ETH
-        const qty = Math.max(0.01, Math.min(5.0, Math.floor(dynamicQty * 100) / 100));
+        // ═══ V92R SL/TP/仓位 (固定值) ═══
+        const slPt = SL_MIN_PT; // 20pt 固定
+        const tpPt = TP_RR_RATIO > 0 ? slPt * TP_RR_RATIO : 0; // 0=不设止盈
+        const qty = FIXED_QTY; // 3ETH 固定
 
         const reason = `📡 ${wn} ${dir === "long" ? "📈做多" : "📉做空"} 全绿 | POC${pocSl >= 0 ? "+" : ""}${pocSl.toFixed(0)} RSI=${rsi.toFixed(0)} ATR=${atr.toFixed(1)} V=${volR.toFixed(1)}x | SL=${slPt.toFixed(1)} TP=${tpPt.toFixed(1)} Q=${qty.toFixed(2)}ETH`;
 

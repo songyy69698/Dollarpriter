@@ -1,10 +1,9 @@
 /**
- * 🎯 Dollarprinter V92 — 六重共振 + 动态风控
+ * 🎯 Dollarprinter V92R — 19顺+22反
  * ═══════════════════════════════════════════════
- * 入场: POC+RSI+量+ATR+K棒+疲劳+FR+日振 全绿
- * 出场: 动态SL(ATR) + TP(1:1.5RR) + 保本12+3 + 跟踪10
- * 仓位: 每单风险≤1% 动态计算
- * 模式: 信号→CEO确认→动态仓位 | 不回→自动动态仓位
+ * 19窗: 顺POC  | 22窗: 反POC
+ * SL=20固定 | TP=无 | 3ETH | 150x
+ * 回测: $500→$1965 (+293%)
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -13,12 +12,12 @@ import type { Mom12Signal } from "./strategy";
 import { BitunixExecutor } from "./executor";
 import { notifyTG, pollTGCommands } from "./telegram";
 import {
-    LEVERAGE, MARGIN_PER_TRADE,
+    LEVERAGE, MARGIN_PER_TRADE, FIXED_QTY,
     INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
     MAX_DAILY_TRADES, MAX_DAILY_LOSS,
     ETH_SYMBOL, SYMBOL_PRECISION,
     MOM12_THRESHOLD, VOL_MULTIPLIER, BINANCE_BASE,
-    SL_MIN_PT, SL_MAX_PT, TP_RR_RATIO, RISK_PCT,
+    SL_MIN_PT, SL_MAX_PT, TP_RR_RATIO,
     HOLD_EXTEND_PT,
 } from "./config";
 
@@ -68,12 +67,12 @@ class DollarprinterBot {
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
         await notifyTG(
-            `🎯 *V92 六重共振 + 动态风控*\n` +
+            `🎯 *V92R 反转策略 19顺+22反*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 POC+RSI+ATR+量+K棒+FR+日振 全绿\n` +
-            `🛡️ SL=${SL_MIN_PT}-${SL_MAX_PT}pt(ATR) TP=×${TP_RR_RATIO}\n` +
-            `♠️ 风险≤${(RISK_PCT * 100).toFixed(0)}%/单\n` +
-            `⏰ 窗口: 08/15/19/22 UTC+8\n` +
+            `📊 19窗顺POC | 22窗反POC\n` +
+            `🛡️ SL=${SL_MIN_PT}pt固定 TP=无(让利润跑)\n` +
+            `♠️ 固定3ETH/单\n` +
+            `⏰ 窗口: 19/22 UTC+8\n` +
             `发 *1* 激活 | *r* 反思`,
         );
 
