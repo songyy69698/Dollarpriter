@@ -29,7 +29,7 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 export const LEVERAGE = 150;                // V92R: 150x
 export const TAKER_FEE = 0.0004;
 export const MARGIN_PER_TRADE = 50;         // 回退用
-export const FIXED_QTY = 3.0;               // V92R: 固定3ETH
+export const FIXED_QTY = 1.0;               // V92R: 固定1ETH
 
 // ═══════════════════════════════════════
 // V92 入场参数 (六重共振)
