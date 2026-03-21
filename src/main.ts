@@ -1,15 +1,15 @@
 /**
- * 🎯 Dollarprinter V92R — 19顺+22反
+ * 🎯 Dollarprinter V93 — MTF共振 + EMA三排列 + 反转确认
  * ═══════════════════════════════════════════════
- * 19窗: 顺POC  | 22窗: 反POC
- * SL=20固定 | TP=无 | 3ETH | 150x
- * 回测: $500→$1965 (+293%)
+ * 回测: 84.4%胜率 | 盈亏比19.48 | $500→$1160
+ * MTF共振≥6 + EMA3>7>20 + K线反转 + POC回调
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
 import { Mom12Strategy } from "./strategy";
 import type { Mom12Signal } from "./strategy";
 import { BitunixExecutor } from "./executor";
+import { MtfPocEngine } from "./mtf-poc";
 import { notifyTG, pollTGCommands } from "./telegram";
 import {
     LEVERAGE, MARGIN_PER_TRADE, FIXED_QTY,
@@ -19,6 +19,7 @@ import {
     MOM12_THRESHOLD, VOL_MULTIPLIER, BINANCE_BASE,
     SL_MIN_PT, SL_MAX_PT, TP_RR_RATIO,
     HOLD_EXTEND_PT,
+    MTF_MIN_SCORE,
 } from "./config";
 
 function log(msg: string) {
@@ -32,6 +33,7 @@ class DollarprinterBot {
     private ws: BitunixWSEngine;
     private strategy: Mom12Strategy;
     private executor: BitunixExecutor;
+    private mtf: MtfPocEngine;
 
     private paused = true;
     private startTime = Date.now();
@@ -50,14 +52,14 @@ class DollarprinterBot {
         this.ws = new BitunixWSEngine();
         this.strategy = new Mom12Strategy();
         this.executor = new BitunixExecutor(apiKey, secretKey);
+        this.mtf = new MtfPocEngine();
     }
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🎯 V92 六重共振 + 动态风控");
-        log(`  📊 SL=${SL_MIN_PT}-${SL_MAX_PT}pt(ATR) TP=SL×${TP_RR_RATIO}`);
-        log(`  🛡️ 保本${BREAKEVEN_PT}+3 → 跟踪${TRAILING_PT}`);
-        log(`  💰 风险≤1% | ${LEVERAGE}x`);
+        log("  🎯 V93 MTF共振 + EMA3>7>20 + 反转确认");
+        log(`  🔬 MTF共振≥${MTF_MIN_SCORE}/12 + EMA三排列 + 反转 + 回调`);
+        log(`  🛡️ SL=${SL_MIN_PT}pt | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
         this.ws.start();
@@ -66,14 +68,22 @@ class DollarprinterBot {
         const bal = await this.executor.getBalance();
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
+        // MTF-POC 共振引擎预加载
+        const mtfOk = await this.mtf.bootstrap();
+        if (mtfOk) {
+            log(`  🔬 MTF-POC 就绪`);
+        } else {
+            log(`  ⚠️ MTF-POC 预加载失败, 将在后台继续采集`);
+        }
+
         await notifyTG(
-            `🎯 *V92R 反转策略 19顺+22反*\n` +
+            `🎯 *V93 MTF + EMA + 反转*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 19窗顺POC | 22窗反POC\n` +
-            `🛡️ SL=${SL_MIN_PT}pt固定 TP=无(让利润跑)\n` +
-            `♠️ 固定3ETH/单\n` +
-            `⏰ 窗口: 19/22 UTC+8\n` +
-            `发 *1* 激活 | *r* 反思`,
+            `🔬 MTF共振≥${MTF_MIN_SCORE}/12 + EMA3>7>20 + 反转\n` +
+            `🛡️ SL=${SL_MIN_PT}pt | 回调POC±5pt\n` +
+            `♠️ 固定${FIXED_QTY}ETH/单\n` +
+            `⏰ 窗口: 08/15/19/22 UTC+8\n` +
+            `发 *1* 激活 | *r* 反思 | *m* MTF详情`,
         );
 
         await this.executor.setupTradeEnv(ETH_SYMBOL);
@@ -93,7 +103,7 @@ class DollarprinterBot {
         setInterval(() => this.hourlyReport(), 3600_000);
         setInterval(() => this.dailyReset(), 60_000);
 
-        log("🟢 V92 就绪 — 发 1 激活");
+        log("🟢 V93 就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -125,6 +135,9 @@ class DollarprinterBot {
 
             // 刷新 K线数据
             await this.strategy.refreshKlines();
+            // 刷新 MTF-POC 共振引擎
+            const snap = this.ws.getSnapshot();
+            await this.mtf.refresh(snap.ethPrice);
 
             // 检查待确认信号
             const pending = this.strategy.pendingSignal;
@@ -151,9 +164,16 @@ class DollarprinterBot {
             }
 
             this.signalNotified = false;
-            const snap = this.ws.getSnapshot();
             const bal = await this.executor.getBalance();
-            this.strategy.evaluate(snap.ethPOCSlope, bal); // V92: 传WS POC + 余额
+            // 传递 MTF 共振评分 + 回调状态给策略
+            const mtfResult = this.mtf.getScore(snap.ethPrice);
+            this.strategy.evaluate(
+                snap.ethPOCSlope,
+                bal,
+                mtfResult.score,
+                mtfResult.dir,
+                mtfResult.pullbackStatus,
+            );
 
         }, 10_000); // 每10秒检查 (K线5分钟更新一次)
     }
@@ -292,8 +312,10 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V92 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
-                "/help": async () => { await notifyTG(`📖 *V92 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nx 强平`); },
+                "h": async () => { await notifyTG(`📖 *V92+MTF 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nm MTF详情 | x 强平`); },
+                "/help": async () => { await notifyTG(`📖 *V92+MTF 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nm MTF详情 | x 强平`); },
+                "m": async () => { await this.sendMtfReport(); },
+                "/mtf": async () => { await this.sendMtfReport(); },
             });
         }, 2000);
     }
@@ -320,6 +342,13 @@ class DollarprinterBot {
             m += `最优:+${this.executor.bestProfitPt.toFixed(1)}pt\n`;
         }
         await notifyTG(m);
+    }
+
+    /** 🔬 MTF 共振详情报告 */
+    private async sendMtfReport() {
+        const s = this.ws.getSnapshot();
+        const msg = this.mtf.formatTelegram(s.ethPrice);
+        await notifyTG(msg);
     }
 
     private async hourlyReport() {
@@ -391,7 +420,11 @@ class DollarprinterBot {
             const line2 = `POC${pocDir}(${pocSlope >= 0 ? "+" : ""}${pocSlope.toFixed(0)}) ${pocChase} 48h${chg48h >= 0 ? "+" : ""}${chg48h.toFixed(0)}pt ${fatigue}`;
             const line3 = `${nextWin}窗→${action} 日振${dayRange.toFixed(0)}pt`;
 
-            await notifyTG(`${line1}\n${line2}\n${line3}`);
+            // MTF 共振摘要
+            const mtfResult = this.mtf.getScore(price);
+            const mtfLine = `🔬 MTF: ${mtfResult.score >= 0 ? "+" : ""}${mtfResult.score}/12 ${mtfResult.dir === "long" ? "↑多" : mtfResult.dir === "short" ? "↓空" : "→不明"} POC=$${mtfResult.nearestPOC.toFixed(0)} 回调=${mtfResult.pullbackStatus}`;
+
+            await notifyTG(`${line1}\n${line2}\n${line3}\n${mtfLine}`);
         } catch (e) {
             await notifyTG(`⚠️ 反思失败: ${e}`);
         }

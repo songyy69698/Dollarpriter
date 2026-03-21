@@ -119,3 +119,13 @@ export const ENTRY_QTY = 3.0;              // V92R: 固定3ETH
 // Binance API (K线数据用)
 // ═══════════════════════════════════════
 export const BINANCE_BASE = "https://api.binance.com";
+export const RSI_PERIOD = 14;
+
+// ═══════════════════════════════════════
+// MTF-POC 共振 + 回调入场
+// ═══════════════════════════════════════
+export const MTF_ENABLED = true;                // 启用 MTF 共振过滤
+export const MTF_MIN_SCORE = 6;                 // 至少6/12个TF方向一致
+export const MTF_REFRESH_MS = 60_000;           // 每60秒刷新
+export const PULLBACK_ZONE_PT = 5;              // POC ±5pt = 回调到位
+export const MAX_CHASE_PT = 15;                 // 超过POC 15pt = 不追
