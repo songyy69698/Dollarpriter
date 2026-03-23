@@ -417,6 +417,15 @@ class SymbolTracker {
         }
         this.bidWallVol = bidVol;
 
+        // 🔥 修复: 用 bestAsk/bestBid 中点作为备用价格 (解决只收到depth没有trade时price=$0)
+        if (this.bestAsk > 0 && this.bestBid > 0) {
+            const midPrice = (this.bestAsk + this.bestBid) / 2;
+            if (this.price <= 0 || Date.now() - this.priceTs > 5000) {
+                this.price = midPrice;
+                this.priceTs = Date.now();
+            }
+        }
+
         // V75: 记录牆体历史 (用于变化率计算)
         const now = Date.now();
         this.bidWallHistory.push({ ts: now, vol: bidVol });
