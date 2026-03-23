@@ -70,7 +70,7 @@ export const FIRE_CANDLE_END_UTC = 12;     // Fire Candle 结束 UTC 12:00
 export const TRADE_START_UTC = 12;          // 交易窗口开始 UTC 12:00
 export const TRADE_END_UTC = 20;            // 交易窗口结束 UTC 20:00
 export const FIRE_MIN_BODY_RATIO = 0.35;   // V104: 实体占比 ≥35%
-export const FIRE_MIN_RANGE_PT = 40;       // V104: Fire范围 ≥40pt (回测最优)
+export const FIRE_MIN_RANGE_PT = 35;       // V104: Fire范围 ≥35pt (三月6笔100%胜)
 
 // V104: 诱导回踩过滤
 export const INDUCEMENT_MIN_DEPTH_PT = 5;   // V104: 诱导深度 ≥5pt (回测最优)
