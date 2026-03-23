@@ -272,7 +272,13 @@ export class Mom12Strategy {
         }
 
         const tpPt = slPt * TP_RR_RATIO;  // TP = 3R
-        const qty = FIXED_QTY;
+
+        // 🎯 动态仓位: 每单风险 = 余额 × 1%
+        const bal = balance || 500;
+        const riskAmount = bal * 0.01;  // 1% 风险
+        let qty = riskAmount / slPt;
+        qty = Math.max(0.01, Math.round(qty * 1000) / 1000);  // 最小0.01, 精度3位
+        log(`💰 动态仓位: $${bal.toFixed(0)} × 1% = $${riskAmount.toFixed(1)} / ${slPt.toFixed(0)}pt = ${qty.toFixed(3)} ETH`);
 
         // 窗口结束 = UTC 20:00
         const endTs = new Date();
