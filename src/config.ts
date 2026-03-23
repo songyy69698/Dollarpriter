@@ -1,8 +1,8 @@
 /**
- * 🔥 V96 Fire Candle — 4H K线延续策略 (实盘测试版)
+ * 🔥 V96 Fire Candle — $150→$500 两天挑战版
  * ═══════════════════════════════════════
- * UTC 08-12 强K线 → UTC 12-20 诱导回踩入场
- * 回测: $150→$500 约36天 10%风险+5R
+ * 固定2ETH + 20pt SL + 5R(100pt TP)
+ * 赢一笔+$200 | 输2笔就到$500
  */
 
 // ═══════════════════════════════════════
@@ -28,7 +28,7 @@ export const SYMBOL_PRECISION: Record<string, { qty: number; price: number }> = 
 export const LEVERAGE = 150;                // V92R: 150x
 export const TAKER_FEE = 0.0004;
 export const MARGIN_PER_TRADE = 50;         // 回退用
-export const FIXED_QTY = 1.0;               // V92R: 固定1ETH
+export const FIXED_QTY = 2.0;               // 挑战版: 固定2ETH
 
 // ═══════════════════════════════════════
 // V92 入场参数 (六重共振)
@@ -80,10 +80,11 @@ export const TRADE_WINDOWS: WindowConfig[] = [
 // V92 出场: 动态SL(ATR) + TP(1:1.5RR) + 保本12+3 + 跟踪10
 // ═══════════════════════════════════════
 export const SL_ATR_MULT = 1.0;
-export const SL_MIN_PT = 20.0;              // V92R: 固定20pt
-export const SL_MAX_PT = 20.0;              // V92R: 固定20pt
-export const INITIAL_SL_PT = 20.0;          // V92R: SL=20固定
-export const TP_RR_RATIO = 5;               // V96实测: TP = 5R (回测最优)
+export const SL_MIN_PT = 20.0;              // 挑战版: 固定20pt SL
+export const SL_MAX_PT = 20.0;              // 挑战版: 固定20pt SL
+export const INITIAL_SL_PT = 20.0;          // 挑战版: 固定20pt SL
+export const TP_RR_RATIO = 5;               // 挑战版: 5R = 100pt TP
+export const TARGET_BALANCE = 500;          // 🎯 达标停止
 export const BREAKEVEN_PT = 12.0;           // 浮盈 12pt → 移保本
 export const BREAKEVEN_SL_OFFSET = 3.0;     // 保本后 SL = 入场 + 3pt
 export const TRAILING_PT = 10.0;            // 跟踪距离 10pt
@@ -101,8 +102,8 @@ export const POS_SIZE_LEVERAGE = 15;        // 仓位计算用15x (保守)
 export const COOLDOWN_MS = 60_000;
 export const MIN_HOLD_MS = 5_000;
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 4;           // V96实测: 每天最多4笔 ($150→$500挑战)
-export const MAX_DAILY_LOSS = 50;            // V96实测: $50 日亏损限制 ($150账户)
+export const MAX_DAILY_TRADES = 4;           // 挑战版: 每天4笔
+export const MAX_DAILY_LOSS = 80;            // 挑战版: $80日亏损限制
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate

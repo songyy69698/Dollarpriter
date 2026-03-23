@@ -16,6 +16,7 @@
 import {
     ETH_SYMBOL, COOLDOWN_MS, BINANCE_BASE,
     FIXED_QTY, SL_MIN_PT, TP_RR_RATIO, RISK_PCT, MAX_DAILY_TRADES,
+    INITIAL_SL_PT, TARGET_BALANCE,
     FIRE_CANDLE_START_UTC, FIRE_CANDLE_END_UTC,
     TRADE_START_UTC, TRADE_END_UTC,
     FIRE_MIN_BODY_RATIO,
@@ -255,30 +256,23 @@ export class Mom12Strategy {
 
         if (!entry) return null;
 
-        // ═══ Step 4: 计算 SL/TP ═══
+        // ═══ Step 4: 固定20pt SL + 5R TP ═══
         const price = latestBar.c;
-        let slPt: number;
-        if (f.dir === "long") {
-            slPt = price - f.l + 1;  // SL = Fire Low - 1
-        } else {
-            slPt = f.h - price + 1;  // SL = Fire High + 1
-        }
+        const slPt = INITIAL_SL_PT;  // 固定20pt
 
-        // SL 安全范围
-        if (slPt < 3) slPt = SL_MIN_PT;
-        if (slPt > 200) {
-            log(`⚠️ SL 太大 ${slPt.toFixed(0)}pt → 跳过`);
+        const tpPt = slPt * TP_RR_RATIO;  // 5R = 100pt
+
+        // 🎯 达标检测
+        const bal = balance || 150;
+        if (bal >= TARGET_BALANCE) {
+            log(`🏆 已达标 $${bal.toFixed(0)} ≥ $${TARGET_BALANCE} → 停止交易!`);
             return null;
         }
 
-        const tpPt = slPt * TP_RR_RATIO;  // TP = 3R
-
-        // 🎯 动态仓位: 每单风险 = 余额 × RISK_PCT
-        const bal = balance || 150;
-        const riskAmount = bal * RISK_PCT;  // 10% 风险
-        let qty = riskAmount / slPt;
-        qty = Math.max(0.01, Math.round(qty * 1000) / 1000);  // 最小0.01, 精度3位
-        log(`💰 动态仓位: $${bal.toFixed(0)} × ${(RISK_PCT * 100).toFixed(0)}% = $${riskAmount.toFixed(1)} / ${slPt.toFixed(0)}pt = ${qty.toFixed(3)} ETH`);
+        // 💰 固定仓位
+        const qty = FIXED_QTY;  // 固定2 ETH
+        const maxLoss = qty * slPt;
+        log(`💰 固定仓位: ${qty} ETH | SL=${slPt}pt | TP=${tpPt}pt | 最大亏损=$${maxLoss.toFixed(0)} | 余额=$${bal.toFixed(0)}`);
 
         // 窗口结束 = UTC 20:00
         const endTs = new Date();
