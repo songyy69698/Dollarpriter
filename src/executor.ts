@@ -572,8 +572,14 @@ export class BitunixExecutor {
                         this.positionQty = totalQty;
                     }
                 } else if (positions.length === 0 && this.inPosition && sym === this.positionSymbol) {
-                    log("⚠️ 仓位已被关闭 (STOP_MARKET 可能已触发)");
-                    this.resetPosition();
+                    // 🔥 修复: 开仓后10秒内不清空状态(防API延迟误判)
+                    const sinceEntry = Date.now() - this.entryTs;
+                    if (sinceEntry > 10_000) {
+                        log("⚠️ 仓位已被关闭 (STOP_MARKET 可能已触发)");
+                        this.resetPosition();
+                    } else {
+                        log(`⏳ sync: 仓位暂未出现 (入场后${(sinceEntry/1000).toFixed(1)}s, 等待API同步...)`);
+                    }
                 }
             } catch (e) {
                 log(`syncPositions 异常 [${sym}]: ${e}`);
