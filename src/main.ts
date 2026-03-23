@@ -62,9 +62,9 @@ class DollarprinterBot {
         await initTG();
 
         log("════════════════════════════════════════════");
-        log("  🔥 V96 Fire Candle | 4H K线延续 | 双向");
+        log("  🔥 V96 挑战版 | $150→$500 | 2ETH");
         log(`  📊 UTC 08-12 判方向 | UTC 12-20 等诱导回踩`);
-        log(`  🛡️ SL=4H极值 | TP=3R | ${LEVERAGE}x`);
+        log(`  🛡️ SL=20pt固定 | TP=5R(100pt) | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
         this.ws.start();
@@ -77,11 +77,11 @@ class DollarprinterBot {
         log(`  📊 V96 Fire Candle 引擎就绪`);
 
         await notifyTG(
-            `🔥 *V96 Fire Candle*\n` +
+            `🔥 *V96 挑战版 $150→$500*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
             `📊 UTC 08-12 4H K线判方向\n` +
-            `🛡️ SL=4H极值 | TP=3R\n` +
-            `♠️ 动态仓位(1%风控) | 双向\n` +
+            `🛡️ SL=20pt固定 | TP=5R(100pt)\n` +
+            `♠️ 固定2ETH | 达$500停止\n` +
             `⏰ UTC 12-20 等诱导回踩\n` +
             `发 *1* 激活 | *r* 反思`,
         );
