@@ -1,5 +1,5 @@
 /**
- * 🔥 Dollarprinter V96 挑战版 — $150→$500
+ * 🔥 Dollarprinter V104 混合止盈版 — $150→$500
  * ═════════════════════════════════════════════
  * 回测: $500→$1300 (+160%) | 43笔 58%胜 PF2.30
  * UTC 08-12 4H K线判方向 → UTC 12-20 诱导回踩入场
@@ -62,9 +62,9 @@ class DollarprinterBot {
         await initTG();
 
         log("════════════════════════════════════════════");
-        log("  🔥 V96 挑战版 | $150→$500 | 2ETH");
+        log("  🔥 V104 混合止盈版 | $150→$500 | 2ETH");
         log(`  📊 UTC 08-12 判方向 | UTC 12-20 等诱导回踩`);
-        log(`  🛡️ SL=20pt固定 | TP=5R(100pt) | ${LEVERAGE}x`);
+        log(`  🛡️ SL=动态[15-22pt] | TP=分批+35pt锁50% | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
         this.ws.start();
@@ -73,14 +73,14 @@ class DollarprinterBot {
         const bal = await this.executor.getBalance();
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
-        // V96挑战版: 不需要 MTF-POC
-        log(`  📊 V96 挑战版引擎就绪`);
+        // V104挑战版: 不需要 MTF-POC
+        log(`  📊 V104 混合止盈版引擎就绪`);
 
         await notifyTG(
-            `🔥 *V96 挑战版 $150→$500*\n` +
+            `🔥 *V104 混合止盈版 $250→$500*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
             `📊 UTC 08-12 4H K线判方向\n` +
-            `🛡️ SL=20pt固定 | TP=5R(100pt)\n` +
+            `🛡️ SL=动态[15-22pt] | TP=+35pt锁50%+trailing\n` +
             `♠️ 固定2ETH | 达$500停止\n` +
             `⏰ UTC 12-20 等诱导回踩\n` +
             `发 *1* 激活 | *r* 反思`,
@@ -104,7 +104,7 @@ class DollarprinterBot {
         setInterval(() => this.dailyReset(), 60_000);
         setInterval(() => this.dailyAutoReflect(), 60_000);
 
-        log("🟢 V96 就绪 — 发 1 激活");
+        log("🟢 V104 就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -171,7 +171,7 @@ class DollarprinterBot {
 
             this.signalNotified = false;
             const bal = await this.executor.getBalance();
-            // V96挑战版: 传递大单 Delta 给策略
+            // V104挑战版: 传递大单 Delta 给策略
             this.strategy.evaluate(
                 snap.ethPOCSlope,
                 bal,
@@ -185,7 +185,7 @@ class DollarprinterBot {
 
     private async sendSignalNotification(sig: Mom12Signal) {
         const msg =
-            `🔥 *V96 挑战版*\n` +
+            `🔥 *V104 混合止盈版*\n` +
             `──────────\n` +
             `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
             `价格: $${sig.price.toFixed(2)}\n` +
@@ -233,7 +233,7 @@ class DollarprinterBot {
             await Bun.sleep(500);
             await this.executor.syncPositions();
 
-            // ═══ V96: 窗口收盘定时平仓 ═══
+            // ═══ V104: 窗口收盘定时平仓 ═══
             const pending = this.strategy.pendingSignal;
             if (pending?.windowEndTs) {
                 const msToClose = pending.windowEndTs - Date.now();
@@ -292,8 +292,8 @@ class DollarprinterBot {
             polling = true;
             try {
                 lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V96 挑战版 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V96 挑战版 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V104 混合止盈版 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V104 混合止盈版 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {
@@ -335,8 +335,8 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V96 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
-                "/help": async () => { await notifyTG(`📖 *V96 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
+                "h": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
+                "/help": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
                 "m": async () => { await this.sendMtfReport(); },
                 "/mtf": async () => { await this.sendMtfReport(); },
                 "t": async () => {
@@ -371,7 +371,7 @@ class DollarprinterBot {
         const upMs = Date.now() - this.startTime;
         const upH = Math.floor(upMs / 3600_000), upM = Math.floor((upMs % 3600_000) / 60_000);
 
-        let m = `🎯 *V96 挑战版*\n──────────\n`;
+        let m = `🎯 *V104 混合止盈版*\n──────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${upH}h${upM}m\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
@@ -401,7 +401,7 @@ class DollarprinterBot {
         const b = await this.executor.getBalance();
         const upH = Math.floor((Date.now() - this.startTime) / 3600_000);
         await notifyTG(
-            `💓 *V96挑战* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
+            `💓 *V104挑战* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
             `ETH $${s.ethPrice.toFixed(2)} | $${b.toFixed(2)}\n` +
             `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`,
         );

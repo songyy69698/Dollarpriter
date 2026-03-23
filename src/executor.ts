@@ -12,6 +12,7 @@ import {
     INITIAL_SL_PT, BREAKEVEN_PT, BREAKEVEN_SL_OFFSET, TRAILING_PT,
     TAKER_FEE, SYMBOL_PRECISION, TP_RR_RATIO,
     MIN_HOLD_MS, HOLD_EXTEND_PT,
+    PARTIAL_TP_PT, FULL_TP_PT,
 } from "./config";
 
 function log(msg: string) {
@@ -62,13 +63,14 @@ export class BitunixExecutor {
     tradeLog: any[] = [];
     private entryCtx: EntryContext | null = null;  // 📊 入场上下文
 
-    // V92 动态风控状态
+    // V104 动态风控状态
     breakevenTriggered = false;
     bestProfitPt = 0;
-    dynamicSlPt = INITIAL_SL_PT;   // 动态SL (ATR计算)
-    dynamicTpPt = 0;               // 动态TP (SL×1.5)
+    dynamicSlPt = INITIAL_SL_PT;   // 动态SL
+    dynamicTpPt = 0;               // 动态TP
     private tpOrderId = "";         // TP挂单ID
     currentWindowName = "";         // 当前窗口名
+    partialClosed = false;          // V104: 已平50%?
 
     // 延迟诊断
     lastEntryMs = 0;
@@ -437,7 +439,7 @@ export class BitunixExecutor {
             return { closed: false, reason: "", netPnlU: 0, symbol: "" };
         }
 
-        // ═══ Layer 2: 保本线 — 浮盈≥5pt → SL移到入场+1pt ═══
+        // ═══ Layer 2: 保本线 — V104: +6pt → SL+1.5pt ═══
         if (!reason && !this.breakevenTriggered && pnlPt >= BREAKEVEN_PT) {
             this.breakevenTriggered = true;
             const newSl = this.positionSide === "long"
@@ -454,7 +456,30 @@ export class BitunixExecutor {
             else log("⚠️ 保本 SL 挂单失败!");
         }
 
-        // ═══ Layer 3: 跟踪止盈 — 保本后，SL = 最优浮盈 - 5pt ═══
+        // ═══ Layer 3: V104 分批止盈 — +35pt 平50% ═══
+        if (!reason && !this.partialClosed && pnlPt >= PARTIAL_TP_PT) {
+            const halfQty = Math.floor(this.positionQty * 5) / 10; // 50%精度
+            if (halfQty > 0) {
+                log(`🎯 分批止盈! +${pnlPt.toFixed(1)}pt ≥ ${PARTIAL_TP_PT}pt → 平${halfQty}/${this.positionQty}`);
+                const closedQty = await this.closePartialPosition(sym, halfQty);
+                if (closedQty > 0) {
+                    this.partialClosed = true;
+                    this.positionQty -= closedQty;
+                    const partialGross = pnlPt * closedQty;
+                    const partialFee = (this.entryPrice * closedQty + currentPrice * closedQty) * TAKER_FEE;
+                    log(`✅ 半仓已平: ${closedQty} ${sym} | +${(partialGross - partialFee).toFixed(2)}U | 剩余${this.positionQty}`);
+                    // 更新SL挂单为剩余数量
+                    if (this.slOrderId) {
+                        await this.cancelOrder(sym, this.slOrderId);
+                        const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
+                        const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, this.currentSlPrice, prec);
+                        if (slOk) log(`✅ SL更新为剩余量: ${this.positionQty}`);
+                    }
+                }
+            }
+        }
+
+        // ═══ Layer 4: V104 跟踪止盈 — trailing -12pt ═══
         if (!reason && this.breakevenTriggered && this.bestProfitPt > BREAKEVEN_PT) {
             const trailSl = this.positionSide === "long"
                 ? this.entryPrice + this.bestProfitPt - TRAILING_PT
@@ -473,7 +498,7 @@ export class BitunixExecutor {
                 if (slOk) this.currentSlPrice = trailSl;
             }
 
-            // 如果跌破跟踪 SL → 平仓
+            // 跌破跟踪 SL → 平仓
             if (this.positionSide === "long" && currentPrice <= this.currentSlPrice) {
                 reason = `📈 跟踪止盈: 最优+${this.bestProfitPt.toFixed(1)}pt → 回撤到 ${pnlPt.toFixed(1)}pt`;
             }
@@ -482,7 +507,12 @@ export class BitunixExecutor {
             }
         }
 
-        // ═══ Layer 4: 高滑点激进出场 ═══
+        // ═══ Layer 5: V104 全平 — +100pt 5R ═══
+        if (!reason && pnlPt >= FULL_TP_PT) {
+            reason = `🏆 5R全平: +${pnlPt.toFixed(1)}pt ≥ ${FULL_TP_PT}pt`;
+        }
+
+        // ═══ Layer 6: 高滑点激进出场 ═══
         if (!reason && this.highSlippage && pnlPt >= 1.0) {
             reason = `🚨 高滑点出场 [Slip=${this.lastSlippage.toFixed(2)}pt]: +${pnlPt.toFixed(prec.price)}pt`;
         }
@@ -653,6 +683,29 @@ export class BitunixExecutor {
         return closedCount;
     }
 
+    /** V104: 部分平仓 — 平指定数量 */
+    private async closePartialPosition(sym: string, qty: number): Promise<number> {
+        const prec = getPrecision(sym);
+        try {
+            const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
+            const orderData: Record<string, string> = {
+                symbol: sym, side: closeSide, tradeSide: "CLOSE", orderType: "MARKET",
+                qty: qty.toFixed(prec.qty),
+            };
+            const result = await this.postOrder(orderData);
+            if (result) {
+                log(`✅ 部分平仓: ${qty} ${sym}`);
+                return qty;
+            } else {
+                log(`❌ 部分平仓失败: ${qty} ${sym}`);
+                return 0;
+            }
+        } catch (e) {
+            log(`closePartialPosition 异常: ${e}`);
+            return 0;
+        }
+    }
+
     // ═══ API ═══
     private async postOrder(data: Record<string, string>): Promise<any> {
         const sorted: Record<string, string> = {};
@@ -778,6 +831,7 @@ export class BitunixExecutor {
         this.tpOrderId = "";
         this.currentWindowName = "";
         this.entryCtx = null;
+        this.partialClosed = false;  // V104: 重置分批状态
     }
 
     private logTrade(reason: string, pnlPt: number, netPnlU: number) {
