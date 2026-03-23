@@ -15,7 +15,7 @@
 
 import {
     ETH_SYMBOL, COOLDOWN_MS, BINANCE_BASE,
-    FIXED_QTY, SL_MIN_PT, TP_RR_RATIO, RISK_PCT,
+    FIXED_QTY, SL_MIN_PT, TP_RR_RATIO, RISK_PCT, MAX_DAILY_TRADES,
     FIRE_CANDLE_START_UTC, FIRE_CANDLE_END_UTC,
     TRADE_START_UTC, TRADE_END_UTC,
     FIRE_MIN_BODY_RATIO,
@@ -63,7 +63,7 @@ export class Mom12Strategy {
     private todayFire: FireCandle | null = null;
     private todayDate = "";
     private manipulated = false;
-    private todayTraded = false;
+    private todayTradeCount = 0;
 
     // 1h K线缓存
     private klines1h: K1h[] = [];
@@ -82,7 +82,7 @@ export class Mom12Strategy {
 
     approveTrade() { this._ceoApproved = true; log("✅ CEO 确认开单!"); }
     clearPending() { this._pendingSignal = null; this._ceoApproved = false; }
-    markTraded() { this.lastTradeTs = Date.now(); this.todayTraded = true; this.clearPending(); }
+    markTraded() { this.lastTradeTs = Date.now(); this.todayTradeCount++; this.manipulated = false; this.clearPending(); log(`📋 今日已开单 ${this.todayTradeCount}/${MAX_DAILY_TRADES}`); }
 
     /** 📊 获取当前策略指标快照 */
     getIndicatorSnapshot() {
@@ -195,12 +195,12 @@ export class Mom12Strategy {
             this.todayDate = today;
             this.todayFire = null;
             this.manipulated = false;
-            this.todayTraded = false;
+            this.todayTradeCount = 0;
             log(`📅 新日: ${today}`);
         }
 
-        // 今天已做过 → 跳过
-        if (this.todayTraded) return null;
+        // 今天已达上限 → 跳过
+        if (this.todayTradeCount >= MAX_DAILY_TRADES) return null;
 
         // ═══ Step 1: UTC 12+ 合成 Fire Candle ═══
         if (!this.todayFire && utcH >= FIRE_CANDLE_END_UTC) {

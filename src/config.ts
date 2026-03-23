@@ -101,7 +101,7 @@ export const POS_SIZE_LEVERAGE = 15;        // 仓位计算用15x (保守)
 export const COOLDOWN_MS = 60_000;
 export const MIN_HOLD_MS = 5_000;
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 1;           // V96: 每天最多1笔Fire Candle
+export const MAX_DAILY_TRADES = 4;           // V96实测: 每天最多4笔 ($150→$500挑战)
 export const MAX_DAILY_LOSS = 50;            // V96实测: $50 日亏损限制 ($150账户)
 
 // ═══════════════════════════════════════
