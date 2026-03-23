@@ -70,10 +70,10 @@ export const FIRE_CANDLE_END_UTC = 12;     // Fire Candle 结束 UTC 12:00
 export const TRADE_START_UTC = 12;          // 交易窗口开始 UTC 12:00
 export const TRADE_END_UTC = 20;            // 交易窗口结束 UTC 20:00
 export const FIRE_MIN_BODY_RATIO = 0.35;   // V104: 实体占比 ≥35%
-export const FIRE_MIN_RANGE_PT = 80;       // V104: Fire范围 ≥80pt
+export const FIRE_MIN_RANGE_PT = 40;       // V104: Fire范围 ≥40pt (回测最优)
 
 // V104: 诱导回踩过滤
-export const INDUCEMENT_MIN_DEPTH_PT = 12;  // 诱导深度 ≥12pt
+export const INDUCEMENT_MIN_DEPTH_PT = 5;   // V104: 诱导深度 ≥5pt (回测最优)
 export const INDUCEMENT_VOL_MULT = 1.3;     // 诱导量 > 均量×1.3
 
 // V104: 5m入场5条件参数
@@ -105,8 +105,8 @@ export const SL_MAX_PT = 22.0;              // V104: SL上限22pt
 export const INITIAL_SL_PT = 18.0;          // V104: 默认SL 18pt
 export const TP_RR_RATIO = 5;               // 保留兼容
 export const TARGET_BALANCE = 500;          // 🎯 达标停止
-export const BREAKEVEN_PT = 6.0;            // V104: +6pt 移保本
-export const BREAKEVEN_SL_OFFSET = 1.5;     // V104: 保本SL +1.5pt
+export const BREAKEVEN_PT = 12.0;           // V104: +12pt 移保本 (回测最优)
+export const BREAKEVEN_SL_OFFSET = 2.0;     // V104: 保本SL +2pt
 export const TRAILING_PT = 12.0;            // V104: trailing -12pt
 export const PARTIAL_TP_PT = 35;            // V104: +35pt 平50%
 export const FULL_TP_PT = 100;              // V104: +100pt 全平

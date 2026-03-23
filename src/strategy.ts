@@ -398,39 +398,32 @@ export class Mom12Strategy {
         const dir = f.dir as "long" | "short";  // 已在324行排除skip
         if (!this.check15mStructure(dir)) return null;
 
-        // ═══ Step 4: 5m 5条件入场 (V104) ═══
+        // ═══ Step 4: 5m 3核心条件入场 (回测最优) ═══
+        // 3核心 = 回穿FireClose + 强阳线(实体≥58%) + 量能爆发(≥1.4x)
         let entry = false;
         const barBody = Math.abs(latestBar.c - latestBar.o);
         const barRange = latestBar.h - latestBar.l;
         const barBodyRatio = barRange > 0 ? barBody / barRange : 0;
-        const rsi = this.rsi14();
 
         if (f.dir === "long") {
             const cond1 = latestBar.c > f.c - 4;                           // ① 回到Close上方(容差4pt)
-            const cond2 = latestBar.c > latestBar.o && barBodyRatio >= ENTRY_BODY_RATIO; // ② 强阳线
-            const cond3 = prevBar.c < f.c;                                  // ③ 前一根在Close下方
-            const cond4 = avgVol > 0 && latestBar.v >= avgVol * ENTRY_VOL_MULT; // ④ 量能爆发
-            const cond5 = rsi > ENTRY_RSI_MIN && rsi < ENTRY_RSI_MAX;       // ⑤ RSI中性区
+            const cond2 = latestBar.c > latestBar.o && barBodyRatio >= ENTRY_BODY_RATIO; // ② 强阳线≥58%
+            const cond3 = avgVol > 0 && latestBar.v >= avgVol * ENTRY_VOL_MULT; // ③ 量能爆发≥1.4x
 
-            if (cond1 && cond2 && cond3 && cond4 && cond5) {
+            if (cond1 && cond2 && cond3) {
                 entry = true;
-                log(`✅ 5条件全过! C>FC:${cond1} 强阳${barBodyRatio.toFixed(0)}%:${cond2} 前<%:${cond3} Vol${(latestBar.v/avgVol).toFixed(1)}x:${cond4} RSI${rsi.toFixed(0)}:${cond5}`);
-            } else {
-                // 每60秒输出一次过滤状态
-                if (this.scanCount % 6 === 0) {
-                    log(`⏳ 5条件: C>${f.c.toFixed(0)}-4:${cond1?'✅':'❌'} 阳${(barBodyRatio*100).toFixed(0)}%:${cond2?'✅':'❌'} 前<:${cond3?'✅':'❌'} Vol${avgVol>0?(latestBar.v/avgVol).toFixed(1):'?'}x:${cond4?'✅':'❌'} RSI${rsi.toFixed(0)}:${cond5?'✅':'❌'}`);
-                }
+                log(`✅ 3核心入场! C>FC-4:✅ 强阳${(barBodyRatio*100).toFixed(0)}%:✅ Vol${(latestBar.v/avgVol).toFixed(1)}x:✅`);
+            } else if (this.scanCount % 6 === 0) {
+                log(`⏳ 3核心: C>${f.c.toFixed(0)}-4:${cond1?'✅':'❌'} 阳${(barBodyRatio*100).toFixed(0)}%:${cond2?'✅':'❌'} Vol${avgVol>0?(latestBar.v/avgVol).toFixed(1):'?'}x:${cond3?'✅':'❌'}`);
             }
         } else {
             const cond1 = latestBar.c < f.c + 4;
             const cond2 = latestBar.c < latestBar.o && barBodyRatio >= ENTRY_BODY_RATIO;
-            const cond3 = prevBar.c > f.c;
-            const cond4 = avgVol > 0 && latestBar.v >= avgVol * ENTRY_VOL_MULT;
-            const cond5 = rsi > ENTRY_RSI_MIN && rsi < ENTRY_RSI_MAX;
+            const cond3 = avgVol > 0 && latestBar.v >= avgVol * ENTRY_VOL_MULT;
 
-            if (cond1 && cond2 && cond3 && cond4 && cond5) {
+            if (cond1 && cond2 && cond3) {
                 entry = true;
-                log(`✅ 5条件全过(空)! C<FC:${cond1} 强阴${barBodyRatio.toFixed(0)}%:${cond2} 前>%:${cond3} Vol${(latestBar.v/avgVol).toFixed(1)}x:${cond4} RSI${rsi.toFixed(0)}:${cond5}`);
+                log(`✅ 3核心入场(空)! C<FC+4:✅ 强阴${(barBodyRatio*100).toFixed(0)}%:✅ Vol${(latestBar.v/avgVol).toFixed(1)}x:✅`);
             }
         }
 
