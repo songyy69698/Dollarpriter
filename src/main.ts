@@ -343,10 +343,12 @@ class DollarprinterBot {
                     const snap = this.ws.getSnapshot();
                     if (snap.ethPrice <= 0) { await notifyTG("⚠️ 无价格数据"); return; }
                     if (this.executor.inPosition) { await notifyTG("⚠️ 已有持仓"); return; }
-                    await notifyTG(`🧪 *开仓测试* 0.5ETH LONG @ $${snap.ethPrice.toFixed(2)}\n10秒后自动平仓...\n⏳ 启动后60秒冷却期检查中...`);
+                    // 临时清零冷却期
+                    (this.executor as any)._bootTs = 0;
+                    await notifyTG(`🧪 *开仓测试* 0.5ETH LONG @ $${snap.ethPrice.toFixed(2)}`);
                     const ok = await this.executor.atomicEntry("long", snap.ethPrice, 0.5, ETH_SYMBOL, notifyTG, 20, 100, "test");
-                    if (!ok) { await notifyTG("❌ 开仓失败\n可能原因: 启动冷却期(60s)未过 或 余额不足\n请等启动1分钟后重试"); return; }
-                    await notifyTG(`✅ 开仓成功! 持仓中... 10秒后平仓`);
+                    if (!ok) { return; }  // atomicEntry已通过onDepthFail发了详细错误
+                    await notifyTG(`✅ 开仓成功! 10秒后平仓...`);
                     await Bun.sleep(10_000);
                     const snap2 = this.ws.getSnapshot();
                     const r = await this.executor.forceCloseAll(snap2.ethPrice > 0 ? snap2.ethPrice : snap.ethPrice);
