@@ -288,8 +288,8 @@ class DollarprinterBot {
         let lastId = 0;
         setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V96 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V96 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V96 挑战版 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V96 挑战版 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {
