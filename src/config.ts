@@ -108,7 +108,7 @@ export const TARGET_BALANCE = 500;          // 🎯 达标停止
 export const BREAKEVEN_PT = 12.0;           // V104: +12pt 移保本 (回测最优)
 export const BREAKEVEN_SL_OFFSET = 2.0;     // V104: 保本SL +2pt
 export const TRAILING_PT = 12.0;            // V104: trailing -12pt
-export const PARTIAL_TP_PT = 35;            // V104: +35pt 平50%
+export const PARTIAL_TP_PT = 26;            // V104: +26pt 平50% (三月3/6笔锁利)
 export const FULL_TP_PT = 100;              // V104: +100pt 全平
 export const MAX_HOLD_BARS = 120;           // 10小时超时
 
