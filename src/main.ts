@@ -185,12 +185,12 @@ class DollarprinterBot {
 
     private async sendSignalNotification(sig: Mom12Signal) {
         const msg =
-            `🔥 *V96 Fire Candle*\n` +
+            `🔥 *V96 挑战版*\n` +
             `──────────\n` +
             `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
             `价格: $${sig.price.toFixed(2)}\n` +
             `──────────\n` +
-            `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt (3R)\n` +
+            `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt (5R)\n` +
             `仓位: ${sig.dynamicQty.toFixed(2)} ETH\n` +
             `──────────\n` +
             `回 *y* → 确认开单\n` +
