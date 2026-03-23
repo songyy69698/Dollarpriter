@@ -348,16 +348,8 @@ export class Mom12Strategy {
             return null;
         }
 
-        // ═══ V104: ATR波动过滤 ═══
+        // ATR已移至3核心条件之后检查
         const atr = this.atr14();
-        if (atr > 0 && atr < 8) {
-            log(`⏭️ ATR太低: ${atr.toFixed(1)}pt < 8pt 无利润空间`);
-            return null;
-        }
-        if (atr > 55) {
-            log(`⏭️ ATR太高: ${atr.toFixed(1)}pt > 55pt 风险过大`);
-            return null;
-        }
 
         // ═══ Step 2: 诱导回踩 (V104: 深度+量能) ═══
         if (this.klines.length < 3) return null;
@@ -428,6 +420,16 @@ export class Mom12Strategy {
         }
 
         if (!entry) return null;
+
+        // ═══ ATR波动过滤（3核心满足后再检查，避免提前杀信号）═══
+        if (atr > 0 && atr < 7) {
+            log(`⏭️ ATR太低: ${atr.toFixed(1)}pt < 7pt 死水skip`);
+            return null;
+        }
+        if (atr > 68) {
+            log(`⏭️ ATR太高: ${atr.toFixed(1)}pt > 68pt 太疯狂skip`);
+            return null;
+        }
 
         // ═══ Step 5: 动态SL (V104: 诱导低点 + ATR弹性) ═══
         const price = latestBar.c;
