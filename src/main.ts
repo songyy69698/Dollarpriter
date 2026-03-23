@@ -286,8 +286,12 @@ class DollarprinterBot {
     // ═══ Telegram ═══
     private tgCommandLoop() {
         let lastId = 0;
+        let polling = false;  // 🔒 防并发锁
         setInterval(async () => {
-            lastId = await pollTGCommands(lastId, {
+            if (polling) return;  // 上一次还没结束，跳过
+            polling = true;
+            try {
+                lastId = await pollTGCommands(lastId, {
                 "1": async () => { this.paused = false; await notifyTG(`✅ *V96 挑战版 激活*`); },
                 "/start": async () => { this.paused = false; await notifyTG(`✅ *V96 挑战版 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
@@ -336,6 +340,9 @@ class DollarprinterBot {
                 "m": async () => { await this.sendMtfReport(); },
                 "/mtf": async () => { await this.sendMtfReport(); },
             });
+            } finally {
+                polling = false;
+            }
         }, 2000);
     }
 
