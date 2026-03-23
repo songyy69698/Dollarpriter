@@ -422,8 +422,8 @@ export class Mom12Strategy {
         if (!entry) return null;
 
         // ═══ ATR波动过滤（3核心满足后再检查，避免提前杀信号）═══
-        if (atr > 0 && atr < 7) {
-            log(`⏭️ ATR太低: ${atr.toFixed(1)}pt < 7pt 死水skip`);
+        if (atr > 0 && atr < 6.5) {
+            log(`⏭️ ATR太低: ${atr.toFixed(1)}pt < 6.5pt 死水skip`);
             return null;
         }
         if (atr > 68) {
