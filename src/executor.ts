@@ -314,7 +314,7 @@ export class BitunixExecutor {
         return true;
     }
 
-    /** SL 看门狗: 500ms 内确认 SL 订单存在，否则强平 */
+    /** SL 看门狗: 500ms 内确认 SL 订单存在，否则重试 */
     private async slWatchdog(
         sym: string, qty: number, side: "long" | "short",
         entryPrice: number, prec: { qty: number; price: number },
@@ -348,13 +348,13 @@ export class BitunixExecutor {
                 if (retryOk) {
                     log(`✅ Watchdog: SL 重试成功`);
                 } else {
-                    log(`💣 Watchdog: SL 重试失败! 强制平仓保命!`);
-                    const price = this.positionSide === "long" ? entryPrice - 2 : entryPrice + 2;
-                    await this.forceCloseAll(price);
+                    // 🔥 修复: 不再强制平仓! 依赖 checkPosition 软件SL 继续监控
+                    log(`⚠️ Watchdog: SL 挂单失败! 依赖软件SL监控 (${this.dynamicSlPt}pt)`);
+                    // checkPosition 每1秒检查 pnlPt <= -dynamicSlPt 会软件止损
                 }
             }
         } catch (e) {
-            log(`🚨 Watchdog 异常: ${e}`);
+            log(`🚨 Watchdog 异常: ${e} — 依赖软件SL继续监控`);
         }
     }
 
