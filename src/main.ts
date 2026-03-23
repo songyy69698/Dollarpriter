@@ -345,7 +345,7 @@ class DollarprinterBot {
         const upMs = Date.now() - this.startTime;
         const upH = Math.floor(upMs / 3600_000), upM = Math.floor((upMs % 3600_000) / 60_000);
 
-        let m = `🎯 *V92*\n──────────\n`;
+        let m = `🎯 *V96 挑战版*\n──────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${upH}h${upM}m\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
@@ -375,7 +375,7 @@ class DollarprinterBot {
         const b = await this.executor.getBalance();
         const upH = Math.floor((Date.now() - this.startTime) / 3600_000);
         await notifyTG(
-            `💓 *V92* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
+            `💓 *V96挑战* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
             `ETH $${s.ethPrice.toFixed(2)} | $${b.toFixed(2)}\n` +
             `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`,
         );
