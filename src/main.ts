@@ -1,14 +1,15 @@
 /**
- * 🎯 Dollarprinter V93 — MTF共振 + EMA空排 + 反转 + 纯做空
- * ═══════════════════════════════════════════════
- * 回测: 100%胜率 | 13笔全赢 | $0回撤
- * MTF共振≤-6 + EMA3<7<20 + 反转 + 不缩量
+ * 🔥 Dollarprinter V96 — Fire Candle 4H K线延续
+ * ═════════════════════════════════════════════
+ * 回测: $500→$1300 (+160%) | 43笔 58%胜 PF2.30
+ * UTC 08-12 4H K线判方向 → UTC 12-20 诱导回踩入场
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
 import { Mom12Strategy } from "./strategy";
 import type { Mom12Signal } from "./strategy";
 import { BitunixExecutor } from "./executor";
+import type { EntryContext } from "./executor";
 import { MtfPocEngine } from "./mtf-poc";
 import { notifyTG, pollTGCommands } from "./telegram";
 import {
@@ -57,9 +58,9 @@ class DollarprinterBot {
 
     async start() {
         log("════════════════════════════════════════════");
-        log("  🎯 V93 纯做空 | MTF + EMA空排 + 反转 + 不缩量");
-        log(`  🔬 MTF共振≤-${MTF_MIN_SCORE} + EMA3<7<20 + 空头反转 + V>0.8x`);
-        log(`  🛡️ SL=${SL_MIN_PT}pt | ${LEVERAGE}x`);
+        log("  🔥 V96 Fire Candle | 4H K线延续 | 双向");
+        log(`  📊 UTC 08-12 判方向 | UTC 12-20 等诱导回踩`);
+        log(`  🛡️ SL=4H极值 | TP=3R | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
         this.ws.start();
@@ -68,22 +69,17 @@ class DollarprinterBot {
         const bal = await this.executor.getBalance();
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
-        // MTF-POC 共振引擎预加载
-        const mtfOk = await this.mtf.bootstrap();
-        if (mtfOk) {
-            log(`  🔬 MTF-POC 就绪`);
-        } else {
-            log(`  ⚠️ MTF-POC 预加载失败, 将在后台继续采集`);
-        }
+        // V95: 不需要 MTF-POC
+        log(`  📊 V96 Fire Candle 引擎就绪`);
 
         await notifyTG(
-            `🎯 *V93 纯做空版*\n` +
+            `🔥 *V96 Fire Candle*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `🔬 MTF≤-${MTF_MIN_SCORE} + EMA3<7<20 + 反转 + V>0.8x\n` +
-            `🛡️ SL=${SL_MIN_PT}pt | POC±5pt\n` +
-            `♠️ 固定${FIXED_QTY}ETH/单 | 只做空\n` +
-            `⏰ 窗口: 08/15/19/22 UTC+8\n` +
-            `发 *1* 激活 | *r* 反思 | *m* MTF详情`,
+            `📊 UTC 08-12 4H K线判方向\n` +
+            `🛡️ SL=4H极值 | TP=3R\n` +
+            `♠️ ${FIXED_QTY}ETH/单 | 双向\n` +
+            `⏰ UTC 12-20 等诱导回踩\n` +
+            `发 *1* 激活 | *r* 反思`,
         );
 
         await this.executor.setupTradeEnv(ETH_SYMBOL);
@@ -103,7 +99,7 @@ class DollarprinterBot {
         setInterval(() => this.hourlyReport(), 3600_000);
         setInterval(() => this.dailyReset(), 60_000);
 
-        log("🟢 V93 就绪 — 发 1 激活");
+        log("🟢 V96 就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -135,9 +131,7 @@ class DollarprinterBot {
 
             // 刷新 K线数据
             await this.strategy.refreshKlines();
-            // 刷新 MTF-POC 共振引擎
             const snap = this.ws.getSnapshot();
-            await this.mtf.refresh(snap.ethPrice);
 
             // 检查待确认信号
             const pending = this.strategy.pendingSignal;
@@ -165,14 +159,13 @@ class DollarprinterBot {
 
             this.signalNotified = false;
             const bal = await this.executor.getBalance();
-            // 传递 MTF 共振评分 + 回调状态给策略
-            const mtfResult = this.mtf.getScore(snap.ethPrice);
+            // V95: 传递大单 Delta 给策略
             this.strategy.evaluate(
                 snap.ethPOCSlope,
                 bal,
-                mtfResult.score,
-                mtfResult.dir,
-                mtfResult.pullbackStatus,
+                snap.ethBigNetDelta,
+                snap.ethBigCVD,
+                snap.ethBigRatio,
             );
 
         }, 10_000); // 每10秒检查 (K线5分钟更新一次)
@@ -180,16 +173,13 @@ class DollarprinterBot {
 
     private async sendSignalNotification(sig: Mom12Signal) {
         const msg =
-            `🎯 *V92 全绿*\n` +
+            `🔥 *V96 Fire Candle*\n` +
             `──────────\n` +
-            `⏰ ${sig.windowName}\n` +
             `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
             `价格: $${sig.price.toFixed(2)}\n` +
             `──────────\n` +
-            `POC: ${sig.momentum >= 0 ? "+" : ""}${sig.momentum.toFixed(0)}pt\n` +
-            `量: ${sig.volRatio.toFixed(1)}x\n` +
-            `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt\n` +
-            `仓位: ${sig.dynamicQty.toFixed(2)} ETH (1%风险)\n` +
+            `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt (3R)\n` +
+            `仓位: ${sig.dynamicQty.toFixed(2)} ETH\n` +
             `──────────\n` +
             `回 *y* → 确认开单\n` +
             `3分钟不回 → 自动开`;
@@ -202,6 +192,21 @@ class DollarprinterBot {
         const s = this.ws.getSnapshot();
         const livePrice = s.ethPrice > 0 ? s.ethPrice : sig.price;
         const prec = SYMBOL_PRECISION[ETH_SYMBOL] || { qty: 3, price: 2 };
+
+        // 📊 采集入场时的策略指标上下文
+        const indicators = this.strategy.getIndicatorSnapshot();
+        const mtfResult = this.mtf.getScore(livePrice);
+        this.executor.setEntryContext({
+            atr: indicators.atr,
+            mtfScore: mtfResult.score,
+            fundingRate: indicators.fundingRate,
+            ema3: indicators.ema3,
+            ema7: indicators.ema7,
+            ema20: indicators.ema20,
+            volRatio: indicators.volRatio,
+            pocSlope: indicators.pocSlope,
+        });
+
         await notifyTG(`🏁 *${sig.side.toUpperCase()} ETH*\n@ $${livePrice.toFixed(prec.price)} | ${sig.dynamicQty.toFixed(2)}ETH | SL=${sig.slPt.toFixed(1)} TP=${sig.tpPt.toFixed(1)}`);
         const ok = await this.executor.atomicEntry(
             sig.side, livePrice, sig.dynamicQty, ETH_SYMBOL, notifyTG,
@@ -271,8 +276,8 @@ class DollarprinterBot {
         let lastId = 0;
         setInterval(async () => {
             lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V92 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V92 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V96 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V96 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {

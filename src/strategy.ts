@@ -1,27 +1,24 @@
 /**
- * 🧠 V93 MTF共振 + EMA三排列 + 反转确认 — 纯做空版
+ * 🔥 V96 Fire Candle 策略引擎
  * ═════════════════════════════════════════════════
- * 回测: 100%胜率 | 13笔全赢 | $0回撤
+ * 回测: $500→$1300 (+160%) 43笔 58%胜 PF 2.30
  *
- * 入场窗口 (UTC+8):
- *   08:00 亚盘 | 15:00 欧盘 | 19:00 美前 | 22:00 美开
+ * 每日 UTC 12:00 用 1h K线合成 UTC 08-12 的 4H K线
+ * 判定方向 → UTC 12-20 等诱导回踩 → 5m确认入场
  *
- * 入场条件 (全部满足 + 只做空):
- *   1. 12TF POC共振 ≤ -6 (大方向向下)
- *   2. 价格在 POC ±5pt (回调到位)
- *   3. EMA3 < EMA7 < EMA20 空头排列
- *   4. K线反转信号 (空头吞噬/顶部下降)
- *   5. 成交量不缩量 (V > 0.8x 均量)
- *   6. ATR ≥ 3
+ * ① UTC 08-12 强阳=做多 / 强阴=做空 / 十字星=跳过
+ * ② 等价格跌破 Close (做多) 或涨过 Close (做空)
+ * ③ 5m 阳线收回 Close 上方 (做多) = 入场
+ * ④ SL = 4H Low (做多) / High (做空)
+ * ⑤ TP = 3R
  */
 
 import {
     ETH_SYMBOL, COOLDOWN_MS, BINANCE_BASE,
-    ATR_BAN_THRESHOLD, LEVERAGE, FIXED_QTY,
-    SL_MIN_PT, SL_MAX_PT, SL_ATR_MULT,
-    TP_RR_RATIO,
-    BINANCE_FAPI,
-    MTF_ENABLED, MTF_MIN_SCORE, PULLBACK_ZONE_PT,
+    FIXED_QTY, SL_MIN_PT, TP_RR_RATIO,
+    FIRE_CANDLE_START_UTC, FIRE_CANDLE_END_UTC,
+    TRADE_START_UTC, TRADE_END_UTC,
+    FIRE_MIN_BODY_RATIO,
 } from "./config";
 
 function log(msg: string) {
@@ -47,8 +44,15 @@ export interface Mom12Signal {
 export type CausalSignal = Mom12Signal;
 export type WindowSignal = Mom12Signal;
 
-interface K5m {
+interface K1h {
     ts: number; o: number; h: number; l: number; c: number; v: number;
+}
+
+interface FireCandle {
+    date: string;
+    h: number; l: number; o: number; c: number;
+    body: number; range: number; bodyRatio: number;
+    dir: "long" | "short" | "skip";
 }
 
 export class Mom12Strategy {
@@ -56,18 +60,21 @@ export class Mom12Strategy {
     private scanCount = 0;
     private _pendingSignal: Mom12Signal | null = null;
     private _ceoApproved = false;
-    private lastWindowSignal = "";
+    private todayFire: FireCandle | null = null;
+    private todayDate = "";
+    private manipulated = false;
+    private todayTraded = false;
 
-    private klines: K5m[] = [];
+    // 1h K线缓存
+    private klines1h: K1h[] = [];
+    private lastFetch1hTs = 0;
+
+    // 5m K线 (兼容旧代码)
+    private klines: K1h[] = [];
     private lastFetchTs = 0;
 
-    // Funding Rate 缓存
+    // Funding Rate 缓存 (兼容)
     private fundingRate = 0;
-    private fundingTs = 0;
-
-    // 15m K线缓存
-    private klines15m: K5m[] = [];
-    private lastFetch15mTs = 0;
 
     getScanCount() { return this.scanCount; }
     get pendingSignal() { return this._pendingSignal; }
@@ -75,252 +82,224 @@ export class Mom12Strategy {
 
     approveTrade() { this._ceoApproved = true; log("✅ CEO 确认开单!"); }
     clearPending() { this._pendingSignal = null; this._ceoApproved = false; }
-    markTraded() { this.lastTradeTs = Date.now(); this.clearPending(); }
+    markTraded() { this.lastTradeTs = Date.now(); this.todayTraded = true; this.clearPending(); }
 
-    /** 拉取最新 5m K线 */
+    /** 📊 获取当前策略指标快照 */
+    getIndicatorSnapshot() {
+        return {
+            atr: this.atr14(),
+            ema3: 0, ema7: 0, ema20: 0,
+            fundingRate: this.fundingRate,
+            volRatio: 0,
+            pocSlope: 0,
+        };
+    }
+
+    /** 拉取 1h 和 5m K线 */
     async refreshKlines() {
         const now = Date.now();
-        if (now - this.lastFetchTs < 290_000) return;
-        this.lastFetchTs = now;
 
-        try {
-            const end = now;
-            const start = end - 300 * 5 * 60_000;
-            const url = `${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=5m&startTime=${start}&endTime=${end}&limit=300`;
-            const res = await fetch(url);
-            if (!res.ok) return;
-            const data = (await res.json()) as any[][];
-
-            this.klines = data.map(k => ({
-                ts: k[0] as number, o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5],
-            }));
-
-            if (this.scanCount % 12 === 0 && this.klines.length > 2) {
-                const k = this.klines[this.klines.length - 2];
-                const closes = this.klines.map(k => k.c);
-                const ema3 = this.calcEMA(closes, 3);
-                const ema7 = this.calcEMA(closes, 7);
-                const ema20 = this.calcEMA(closes, 20);
-                const emaStatus = ema3 > ema7 && ema7 > ema20 ? "📈多排" : ema3 < ema7 && ema7 < ema20 ? "📉空排" : "➡️无";
-                log(`📊 V93 | $${k.c.toFixed(2)} | EMA=${emaStatus} | ATR=${this.atr14().toFixed(1)} | FR=${(this.fundingRate * 100).toFixed(3)}%`);
+        // 每 60 秒刷新 1h K线
+        if (now - this.lastFetch1hTs > 60_000) {
+            this.lastFetch1hTs = now;
+            try {
+                const start = now - 48 * 3600000; // 48h
+                const url = `${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=1h&startTime=${start}&endTime=${now}&limit=48`;
+                const res = await fetch(url);
+                if (res.ok) {
+                    const data = (await res.json()) as any[][];
+                    this.klines1h = data.map(k => ({
+                        ts: k[0] as number, o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5],
+                    }));
+                }
+            } catch (e) {
+                log(`⚠️ 1h K线拉取失败: ${e}`);
             }
-        } catch (e) {
-            log(`⚠️ K线拉取失败: ${e}`);
         }
 
-        await this.refresh15mKlines();
-        await this.refreshFundingRate();
+        // 兼容: 也拉5m
+        if (now - this.lastFetchTs > 290_000) {
+            this.lastFetchTs = now;
+            try {
+                const start = now - 100 * 5 * 60_000;
+                const url = `${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=5m&startTime=${start}&endTime=${now}&limit=100`;
+                const res = await fetch(url);
+                if (res.ok) {
+                    const data = (await res.json()) as any[][];
+                    this.klines = data.map(k => ({
+                        ts: k[0] as number, o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5],
+                    }));
+                }
+            } catch {}
+        }
     }
 
     // ═══ 指标 ═══
-
     private atr14(): number {
         const n = this.klines.length; if (n < 16) return 0;
         let s = 0; for (let i = n - 15; i < n - 1; i++) s += this.klines[i].h - this.klines[i].l;
         return s / 14;
     }
 
-    private calcEMA(closes: number[], period: number): number {
-        if (closes.length < period) return closes[closes.length - 1] || 0;
-        let ema = closes.slice(0, period).reduce((a, b) => a + b) / period;
-        const m = 2 / (period + 1);
-        for (let i = period; i < closes.length; i++) ema = closes[i] * m + ema * (1 - m);
-        return ema;
-    }
-
-    /** POC方向 (K线近似版 / WS实时版) */
-    private pocSlope(wsPocSlope?: number): number {
-        if (wsPocSlope !== undefined && wsPocSlope !== 0) return wsPocSlope;
-        const n = this.klines.length;
-        if (n < 96) return 0;
-        let maxV1 = 0, poc1 = 0;
-        for (let i = n - 48; i < n; i++) {
-            if (this.klines[i].v > maxV1) { maxV1 = this.klines[i].v; const k = this.klines[i]; poc1 = (k.h + k.l + k.c) / 3; }
-        }
-        let maxV2 = 0, poc2 = 0;
-        for (let i = n - 96; i < n - 48; i++) {
-            if (this.klines[i].v > maxV2) { maxV2 = this.klines[i].v; const k = this.klines[i]; poc2 = (k.h + k.l + k.c) / 3; }
-        }
-        return poc1 - poc2;
-    }
-
-    // ═══ K线反转信号检测 ═══
-    private detectReversal(dir: "long" | "short"): boolean {
-        const n = this.klines.length;
-        if (n < 4) return false;
-        // 用已完成的最近3根K线 (倒数第2,3,4根, 倒数第1根是未完成)
-        const cur = this.klines[n - 2];
-        const prev = this.klines[n - 3];
-        const prev2 = this.klines[n - 4];
-
-        if (dir === "long") {
-            // 多头吞噬: 当前阳线收盘 > 前一根开盘
-            const engulf = cur.c > cur.o && cur.c > prev.o;
-            // 底部抬升 + 连续阳线
-            const risingBottom = cur.l > prev.l && prev.l > prev2.l && cur.c > cur.o && prev.c > prev.o;
-            return engulf || risingBottom;
-        } else {
-            // 空头吞噬
-            const engulf = cur.c < cur.o && cur.c < prev.o;
-            // 顶部下降 + 连续阴线
-            const fallingTop = cur.h < prev.h && prev.h < prev2.h && cur.c < cur.o && prev.c < prev.o;
-            return engulf || fallingTop;
-        }
-    }
-
-    // ═══ 辅助数据刷新 ═══
-
-    private async refresh15mKlines() {
-        const now = Date.now();
-        if (now - this.lastFetch15mTs < 890_000) return;
-        this.lastFetch15mTs = now;
-        try {
-            const start = now - 30 * 15 * 60_000;
-            const url = `${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=15m&startTime=${start}&endTime=${now}&limit=30`;
-            const res = await fetch(url); if (!res.ok) return;
-            const data = (await res.json()) as any[][];
-            this.klines15m = data.map(k => ({ ts: k[0] as number, o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
-        } catch (e) { log(`⚠️ 15m K线失败: ${e}`); }
-    }
-
-    private async refreshFundingRate() {
-        const now = Date.now();
-        if (now - this.fundingTs < 300_000) return;
-        this.fundingTs = now;
-        try {
-            const url = `${BINANCE_FAPI}/fapi/v1/premiumIndex?symbol=ETHUSDT`;
-            const res = await fetch(url); if (!res.ok) return;
-            const data = (await res.json()) as any;
-            this.fundingRate = +(data.lastFundingRate || 0);
-        } catch (e) { log(`⚠️ FR失败: ${e}`); }
-    }
-
     // ═══════════════════════════════════════════════
-    // V93 4窗口入场: 08 / 15 / 19 / 22
+    // 🔥 Fire Candle 核心逻辑
     // ═══════════════════════════════════════════════
 
-    private static readonly WINDOWS = [
-        { name: "08窗口", hour: 8,  endMin: 30, desc: "亚盘开盘" },
-        { name: "15窗口", hour: 15, endMin: 30, desc: "欧盘开盘" },
-        { name: "19窗口", hour: 19, endMin: 30, desc: "美股盘前" },
-        { name: "22窗口", hour: 22, endMin: 30, desc: "美股开盘" },
-    ];
+    /** 从 1h K线合成 Fire Candle (UTC 08-12) */
+    private synthesizeFireCandle(): FireCandle | null {
+        const today = new Date().toISOString().slice(0, 10);
+        const fireHours: number[] = [];
+        for (let h = FIRE_CANDLE_START_UTC; h < FIRE_CANDLE_END_UTC; h++) fireHours.push(h);
+
+        const fireBars = this.klines1h.filter(k => {
+            const d = new Date(k.ts);
+            return d.toISOString().slice(0, 10) === today && fireHours.includes(d.getUTCHours());
+        });
+
+        if (fireBars.length < 3) return null;  // 至少3根1h
+
+        const o = fireBars[0].o;
+        const c = fireBars[fireBars.length - 1].c;
+        const h = Math.max(...fireBars.map(k => k.h));
+        const l = Math.min(...fireBars.map(k => k.l));
+        const body = Math.abs(c - o), range = h - l;
+        if (range < 5) return null;  // 太小不做
+
+        const bodyRatio = body / range;
+        let dir: "long" | "short" | "skip" = "skip";
+        if (bodyRatio >= FIRE_MIN_BODY_RATIO) {
+            dir = c > o ? "long" : "short";
+        }
+
+        return { date: today, h, l, o, c, body, range, bodyRatio, dir };
+    }
 
     evaluate(
         wsPocSlope?: number,
         balance?: number,
-        mtfScore?: number,
-        mtfDir?: string,
-        pullbackStatus?: string,
+        bigDelta?: number,
+        bigCVD?: number,
+        bigRatio?: number,
     ): Mom12Signal | null {
         this.scanCount++;
         const now = Date.now();
         if (now - this.lastTradeTs < COOLDOWN_MS) return null;
         if (this._pendingSignal) return null;
-        if (this.klines.length < 100) return null;
+        if (this.klines1h.length < 10) return null;
 
-        // ═══ Step 1: 检查是否在 4 个窗口内 ═══
-        const dt = new Date();
-        const utc8H = (dt.getUTCHours() + 8) % 24;
-        const utc8M = dt.getUTCMinutes();
+        const utcH = new Date().getUTCHours();
+        const today = new Date().toISOString().slice(0, 10);
 
-        let activeWindow: typeof Mom12Strategy.WINDOWS[0] | null = null;
-        for (const w of Mom12Strategy.WINDOWS) {
-            if (utc8H === w.hour && utc8M < w.endMin) { activeWindow = w; break; }
+        // 每日重置
+        if (today !== this.todayDate) {
+            this.todayDate = today;
+            this.todayFire = null;
+            this.manipulated = false;
+            this.todayTraded = false;
+            log(`📅 新日: ${today}`);
         }
-        if (!activeWindow) return null;
-        if (this.lastWindowSignal === activeWindow.name) return null;
 
-        const wn = activeWindow.name;
+        // 今天已做过 → 跳过
+        if (this.todayTraded) return null;
 
-        // ═══ Step 2: 基础指标 ═══
-        const price = this.klines[this.klines.length - 2].c;
-        const atr = this.atr14();
-        const pocSl = this.pocSlope(wsPocSlope);
+        // ═══ Step 1: UTC 12+ 合成 Fire Candle ═══
+        if (!this.todayFire && utcH >= FIRE_CANDLE_END_UTC) {
+            this.todayFire = this.synthesizeFireCandle();
+            if (this.todayFire) {
+                const f = this.todayFire;
+                const icon = f.dir === "long" ? "🟢做多" : f.dir === "short" ? "🔴做空" : "⚪跳过";
+                log(`🔥 Fire Candle 判定: ${icon} | O=$${f.o.toFixed(1)} C=$${f.c.toFixed(1)} H=$${f.h.toFixed(1)} L=$${f.l.toFixed(1)} | 实体${(f.bodyRatio * 100).toFixed(0)}%`);
+            } else {
+                log(`⏳ Fire Candle 数据不足`);
+            }
+        }
 
-        if (atr < 3) { this.logSkip(wn, `ATR太低=${atr.toFixed(1)}`); return null; }
-        if (atr > ATR_BAN_THRESHOLD) { this.logSkip(wn, `ATR过高=${atr.toFixed(1)}`); return null; }
+        if (!this.todayFire || this.todayFire.dir === "skip") return null;
 
-        // ═══ Step 3: MTF 共振方向 (只做空) ═══
-        let dir: "long" | "short" | "" = "";
-        if (MTF_ENABLED && mtfScore !== undefined) {
-            const absScore = Math.abs(mtfScore);
-            if (absScore < MTF_MIN_SCORE) { this.logSkip(wn, `MTF共振不足 ${mtfScore}/12 (需≥${MTF_MIN_SCORE})`); return null; }
-            dir = mtfDir as "long" | "short" | "";
-            if (!dir) { this.logSkip(wn, "MTF方向不明"); return null; }
+        // 不在交易窗口内 → 跳过
+        if (utcH < TRADE_START_UTC || utcH > TRADE_END_UTC) return null;
+
+        const f = this.todayFire;
+
+        // ═══ Step 2: 等诱导回踩 (Manipulation) ═══
+        // 用最新的5m K线检查
+        if (this.klines.length < 3) return null;
+        const latestBar = this.klines[this.klines.length - 1];
+        const prevBar = this.klines[this.klines.length - 2];
+
+        if (!this.manipulated) {
+            if (f.dir === "long" && latestBar.l < f.c) {
+                this.manipulated = true;
+                log(`📉 诱导回踩! 价格 $${latestBar.l.toFixed(1)} 跌破 Close $${f.c.toFixed(1)}`);
+            }
+            if (f.dir === "short" && latestBar.h > f.c) {
+                this.manipulated = true;
+                log(`📈 诱导回踩! 价格 $${latestBar.h.toFixed(1)} 涨过 Close $${f.c.toFixed(1)}`);
+            }
+            return null;
+        }
+
+        // ═══ Step 3: 5m 确认入场 ═══
+        let entry = false;
+        if (f.dir === "long") {
+            // 阳线收回 Close 上方
+            if (latestBar.c > f.c && latestBar.c > latestBar.o && prevBar.c < f.c) {
+                entry = true;
+            }
         } else {
-            if (pocSl > 5) dir = "long";
-            else if (pocSl < -5) dir = "short";
-            else { this.logSkip(wn, "POC不明"); return null; }
+            // 阴线收回 Close 下方
+            if (latestBar.c < f.c && latestBar.c < latestBar.o && prevBar.c > f.c) {
+                entry = true;
+            }
         }
 
-        // ═══ 🔒 只做空单 ═══
-        if (dir !== "short") {
-            this.logSkip(wn, `跳过做多(MTF=${mtfScore}) — 只做空模式`);
+        if (!entry) return null;
+
+        // ═══ Step 4: 计算 SL/TP ═══
+        const price = latestBar.c;
+        let slPt: number;
+        if (f.dir === "long") {
+            slPt = price - f.l + 1;  // SL = Fire Low - 1
+        } else {
+            slPt = f.h - price + 1;  // SL = Fire High + 1
+        }
+
+        // SL 安全范围
+        if (slPt < 3) slPt = SL_MIN_PT;
+        if (slPt > 200) {
+            log(`⚠️ SL 太大 ${slPt.toFixed(0)}pt → 跳过`);
             return null;
         }
 
-        // ═══ Step 4: 回调到位检查 ═══
-        if (MTF_ENABLED && pullbackStatus && pullbackStatus !== "ready") {
-            this.logSkip(wn, `回调未到位(${pullbackStatus})`);
-            return null;
-        }
-
-        // ═══ Step 5: EMA3 < EMA7 < EMA20 空头排列 ═══
-        const closes = this.klines.map(k => k.c);
-        const ema3 = this.calcEMA(closes, 3);
-        const ema7 = this.calcEMA(closes, 7);
-        const ema20 = this.calcEMA(closes, 20);
-
-        if (ema3 > ema7 || ema7 > ema20) {
-            this.logSkip(wn, `EMA非空排(3=${ema3.toFixed(1)} 7=${ema7.toFixed(1)} 20=${ema20.toFixed(1)})`);
-            return null;
-        }
-        log(`✅ ${wn} EMA空排通过: 3=${ema3.toFixed(1)} 7=${ema7.toFixed(1)} 20=${ema20.toFixed(1)}`);
-
-        // ═══ Step 6: K线反转信号 (空头吞噬/顶部下降) ═══
-        if (!this.detectReversal("short")) {
-            this.logSkip(wn, "无反转信号");
-            return null;
-        }
-        log(`✅ ${wn} 反转信号确认!`);
-
-        // ═══ Step 7: 成交量不缩量检查 (V > 0.8x 均量) ═══
-        const vols = this.klines.slice(-21, -1).map(k => k.v);
-        const avgVol = vols.reduce((a, b) => a + b, 0) / vols.length;
-        const curVol = this.klines[this.klines.length - 2].v;
-        if (curVol < avgVol * 0.8) {
-            this.logSkip(wn, `缩量 V=${(curVol/avgVol).toFixed(2)}x (<0.8x)`);
-            return null;
-        }
-        log(`✅ ${wn} 成交量通过: ${(curVol/avgVol).toFixed(2)}x均量`);
-
-        // ═══ 全部通过! ═══
-        const slPt = SL_MIN_PT;
-        const tpPt = TP_RR_RATIO > 0 ? slPt * TP_RR_RATIO : 0;
+        const tpPt = slPt * TP_RR_RATIO;  // TP = 3R
         const qty = FIXED_QTY;
 
-        const windowEndTs = (() => {
-            const d = new Date();
-            d.setUTCHours((activeWindow!.hour - 8 + 24) % 24, activeWindow!.endMin, 0, 0);
-            if (d.getTime() < now) d.setDate(d.getDate() + 1);
-            return d.getTime();
-        })();
+        // 窗口结束 = UTC 20:00
+        const endTs = new Date();
+        endTs.setUTCHours(TRADE_END_UTC, 0, 0, 0);
+        if (endTs.getTime() < now) endTs.setDate(endTs.getDate() + 1);
 
-        const mtfTag = mtfScore !== undefined ? ` MTF=${mtfScore}/12` : "";
-        const reason = `📡 ${wn}(${activeWindow!.desc}) 📉做空 | EMA3<7<20${mtfTag} V=${(curVol/avgVol).toFixed(1)}x pb=${pullbackStatus || "?"} | SL=${slPt} Q=${qty}ETH`;
+        const bigTag = bigDelta !== undefined && bigDelta !== 0 ? ` bigΔ=${bigDelta.toFixed(1)}` : "";
+        const reason =
+            `🔥 Fire Candle ${f.dir === "long" ? "📈做多" : "📉做空"} | ` +
+            `4H: O$${f.o.toFixed(0)} C$${f.c.toFixed(0)} 实体${(f.bodyRatio * 100).toFixed(0)}% | ` +
+            `SL=${slPt.toFixed(0)}pt TP=${tpPt.toFixed(0)}pt (${TP_RR_RATIO}R)${bigTag}`;
 
         const signal: Mom12Signal = {
-            side: dir, price, qty, reason,
+            side: f.dir as "long" | "short",
+            price,
+            qty,
+            reason,
             targetSymbol: ETH_SYMBOL,
-            windowName: wn,
-            momentum: pocSl,
+            windowName: "Fire窗口",
+            momentum: 0,
             volRatio: 0,
-            windowEndTs,
-            slPt, tpPt, dynamicQty: qty,
+            windowEndTs: endTs.getTime(),
+            slPt,
+            tpPt,
+            dynamicQty: qty,
         };
 
-        this.lastWindowSignal = activeWindow!.name;
         this._pendingSignal = signal;
         this._ceoApproved = false;
         log(reason);

@@ -1,9 +1,8 @@
 /**
- * 🎯 V92R 反转策略 — 19顺+22反
+ * 🔥 V96 Fire Candle — 4H K线延续策略
  * ═══════════════════════════════════════
- * 19窗: 顺POC方向(美股盘前趋势确定)
- * 22窗: 反POC方向(美股开盘回调)
- * 回测: $500→$1965 (+293%) 34笔 50%胜
+ * UTC 08-12 强K线 → UTC 12-20 诱导回踩入场
+ * 回测: $500→$1300 (+160%) 43笔 58%胜 PF2.30
  */
 
 // ═══════════════════════════════════════
@@ -65,11 +64,16 @@ export interface WindowConfig {
     reverseDir?: boolean;  // V92R: 反POC方向
 }
 
-/** V92R: 15反+19顺+22反 */
+/** V96: Fire Candle 时间窗口 (UTC) */
+export const FIRE_CANDLE_START_UTC = 8;    // Fire Candle 开始 UTC 08:00
+export const FIRE_CANDLE_END_UTC = 12;     // Fire Candle 结束 UTC 12:00
+export const TRADE_START_UTC = 12;          // 交易窗口开始 UTC 12:00
+export const TRADE_END_UTC = 20;            // 交易窗口结束 UTC 20:00
+export const FIRE_MIN_BODY_RATIO = 0.4;    // 最低实体占比 40%
+
+/** 兼容旧版 */
 export const TRADE_WINDOWS: WindowConfig[] = [
-    { name: "15窗口", startHour: 15, startMin: 0, endHour: 16, endMin: 0, reverseDir: true },
-    { name: "19窗口", startHour: 19, startMin: 0, endHour: 19, endMin: 30, reverseDir: false },
-    { name: "22窗口", startHour: 22, startMin: 0, endHour: 23, endMin: 0, reverseDir: true },
+    { name: "Fire窗口", startHour: 20, startMin: 0, endHour: 4, endMin: 0, reverseDir: false },
 ];
 
 // ═══════════════════════════════════════
@@ -79,7 +83,7 @@ export const SL_ATR_MULT = 1.0;
 export const SL_MIN_PT = 20.0;              // V92R: 固定20pt
 export const SL_MAX_PT = 20.0;              // V92R: 固定20pt
 export const INITIAL_SL_PT = 20.0;          // V92R: SL=20固定
-export const TP_RR_RATIO = 0;               // V92R: 不设 TP 让利润跑
+export const TP_RR_RATIO = 3;               // V96: TP = 3R
 export const BREAKEVEN_PT = 12.0;           // 浮盈 12pt → 移保本
 export const BREAKEVEN_SL_OFFSET = 3.0;     // 保本后 SL = 入场 + 3pt
 export const TRAILING_PT = 10.0;            // 跟踪距离 10pt
@@ -97,8 +101,8 @@ export const POS_SIZE_LEVERAGE = 15;        // 仓位计算用15x (保守)
 export const COOLDOWN_MS = 60_000;
 export const MIN_HOLD_MS = 5_000;
 export const WS_LAG_MAX_MS = 500;
-export const MAX_DAILY_TRADES = 3;           // V92R: 3窗口最多3单
-export const MAX_DAILY_LOSS = 150;           // V92R: $150 日亏损限制
+export const MAX_DAILY_TRADES = 1;           // V96: 每天最多1笔Fire Candle
+export const MAX_DAILY_LOSS = 150;           // V96: $150 日亏损限制
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate
