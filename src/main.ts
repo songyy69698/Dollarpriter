@@ -1,5 +1,5 @@
 /**
- * 🔥 Dollarprinter V96 — Fire Candle 4H K线延续
+ * 🔥 Dollarprinter V96 挑战版 — $150→$500
  * ═════════════════════════════════════════════
  * 回测: $500→$1300 (+160%) | 43笔 58%胜 PF2.30
  * UTC 08-12 4H K线判方向 → UTC 12-20 诱导回踩入场
@@ -73,8 +73,8 @@ class DollarprinterBot {
         const bal = await this.executor.getBalance();
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
-        // V95: 不需要 MTF-POC
-        log(`  📊 V96 Fire Candle 引擎就绪`);
+        // V96挑战版: 不需要 MTF-POC
+        log(`  📊 V96 挑战版引擎就绪`);
 
         await notifyTG(
             `🔥 *V96 挑战版 $150→$500*\n` +
@@ -171,7 +171,7 @@ class DollarprinterBot {
 
             this.signalNotified = false;
             const bal = await this.executor.getBalance();
-            // V95: 传递大单 Delta 给策略
+            // V96挑战版: 传递大单 Delta 给策略
             this.strategy.evaluate(
                 snap.ethPOCSlope,
                 bal,
@@ -233,7 +233,7 @@ class DollarprinterBot {
             await Bun.sleep(500);
             await this.executor.syncPositions();
 
-            // ═══ V92: 窗口收盘定时平仓 ═══
+            // ═══ V96: 窗口收盘定时平仓 ═══
             const pending = this.strategy.pendingSignal;
             if (pending?.windowEndTs) {
                 const msToClose = pending.windowEndTs - Date.now();
