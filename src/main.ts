@@ -11,7 +11,7 @@ import type { Mom12Signal } from "./strategy";
 import { BitunixExecutor } from "./executor";
 import type { EntryContext } from "./executor";
 import { MtfPocEngine } from "./mtf-poc";
-import { notifyTG, pollTGCommands } from "./telegram";
+import { notifyTG, pollTGCommands, initTG } from "./telegram";
 import {
     LEVERAGE, MARGIN_PER_TRADE, FIXED_QTY,
     INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
@@ -57,6 +57,9 @@ class DollarprinterBot {
     }
 
     async start() {
+        // 🔧 启动时清理 TG 旧连接 (防409)
+        await initTG();
+
         log("════════════════════════════════════════════");
         log("  🔥 V96 Fire Candle | 4H K线延续 | 双向");
         log(`  📊 UTC 08-12 判方向 | UTC 12-20 等诱导回踩`);

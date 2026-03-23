@@ -11,6 +11,21 @@ function log(msg: string) {
     console.log(`${ts} [tg] ${msg}`);
 }
 
+/** 🔧 启动时清理旧连接，防止 409 冲突 */
+export async function initTG(): Promise<void> {
+    if (!TG_BOT_TOKEN) return;
+    try {
+        // 删除 webhook + 丢弃旧消息，确保只有当前实例在拉
+        const res = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true`);
+        const data = await res.json() as any;
+        log(`🔧 清理旧连接: ${data.ok ? "✅成功" : "❌" + JSON.stringify(data)}`);
+        // 等2秒让 TG 服务器释放旧的 getUpdates 连接
+        await new Promise(r => setTimeout(r, 2000));
+    } catch (e) {
+        log(`⚠️ initTG 失败: ${e}`);
+    }
+}
+
 export async function notifyTG(text: string): Promise<void> {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
         log(`⚠️ TG 未配置! TOKEN=${TG_BOT_TOKEN ? "有(" + TG_BOT_TOKEN.slice(0, 6) + "...)" : "❌空"} CHAT_ID=${TG_CHAT_ID || "❌空"}`);
