@@ -80,7 +80,7 @@ class DollarprinterBot {
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
             `📊 UTC 08-12 4H K线判方向\n` +
             `🛡️ SL=4H极值 | TP=3R\n` +
-            `♠️ ${FIXED_QTY}ETH/单 | 双向\n` +
+            `♠️ 动态仓位(1%风控) | 双向\n` +
             `⏰ UTC 12-20 等诱导回踩\n` +
             `发 *1* 激活 | *r* 反思`,
         );
