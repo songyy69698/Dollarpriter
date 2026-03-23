@@ -62,6 +62,8 @@ export async function pollTGCommands(
         );
         const data = (await res.json()) as any;
         if (!data.ok) {
+            // 409冲突(多实例)静默处理，不刷屏
+            if (data.error_code === 409) return lastId;
             log(`⚠️ getUpdates 失败: ${JSON.stringify(data)}`);
             return lastId;
         }
