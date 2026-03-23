@@ -339,6 +339,23 @@ class DollarprinterBot {
                 "/help": async () => { await notifyTG(`📖 *V96 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
                 "m": async () => { await this.sendMtfReport(); },
                 "/mtf": async () => { await this.sendMtfReport(); },
+                "t": async () => {
+                    const snap = this.ws.getSnapshot();
+                    if (snap.ethPrice <= 0) { await notifyTG("⚠️ 无价格数据"); return; }
+                    if (this.executor.inPosition) { await notifyTG("⚠️ 已有持仓"); return; }
+                    await notifyTG(`🧪 *开仓测试* 0.01ETH LONG @ $${snap.ethPrice.toFixed(2)}\n10秒后自动平仓...`);
+                    const ok = await this.executor.atomicEntry("long", snap.ethPrice, 0.01, ETH_SYMBOL, notifyTG, 20, 100, "test");
+                    if (!ok) { await notifyTG("❌ 开仓失败"); return; }
+                    await notifyTG(`✅ 开仓成功! 持仓中... 10秒后平仓`);
+                    await Bun.sleep(10_000);
+                    const snap2 = this.ws.getSnapshot();
+                    const r = await this.executor.forceCloseAll(snap2.ethPrice > 0 ? snap2.ethPrice : snap.ethPrice);
+                    if (r.ok) {
+                        await notifyTG(`✅ *测试完成*\n净PnL: ${r.netPnlU >= 0 ? "+" : ""}${r.netPnlU.toFixed(2)}U\n开关仓流畅 ✅`);
+                    } else {
+                        await notifyTG("❌ 平仓失败");
+                    }
+                },
             });
             } finally {
                 polling = false;
