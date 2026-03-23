@@ -421,9 +421,19 @@ export class Mom12Strategy {
 
         if (!entry) return null;
 
-        // ═══ ATR波动过滤（3核心满足后再检查，避免提前杀信号）═══
-        if (atr > 0 && atr < 6.5) {
-            log(`⏭️ ATR太低: ${atr.toFixed(1)}pt < 6.5pt 死水skip`);
+        // ═══ ATR相对门槛（自适应市场波动）═══
+        // 计算近20根5m bar的ATR均值
+        const atrVals: number[] = [];
+        for (let ai = Math.max(1, this.klines.length - 20); ai < this.klines.length; ai++) {
+            const ki = this.klines[ai];
+            const kp = this.klines[ai - 1];
+            const tr = Math.max(ki.h - ki.l, Math.abs(ki.h - kp.c), Math.abs(ki.l - kp.c));
+            atrVals.push(tr);
+        }
+        const avgAtr20 = atrVals.length > 0 ? atrVals.reduce((a, v) => a + v, 0) / atrVals.length : 0;
+
+        if (avgAtr20 > 0 && atr < avgAtr20 * 0.62) {
+            log(`⏭️ ATR太低: ${atr.toFixed(1)}pt < avg20(${avgAtr20.toFixed(1)})×0.62=${(avgAtr20*0.62).toFixed(1)}pt skip`);
             return null;
         }
         if (atr > 68) {
