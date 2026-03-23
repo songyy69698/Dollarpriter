@@ -10,12 +10,12 @@
  * ② 等价格跌破 Close (做多) 或涨过 Close (做空)
  * ③ 5m 阳线收回 Close 上方 (做多) = 入场
  * ④ SL = 4H Low (做多) / High (做空)
- * ⑤ TP = 3R
+ * ⑤ TP = 5R (回测最优)
  */
 
 import {
     ETH_SYMBOL, COOLDOWN_MS, BINANCE_BASE,
-    FIXED_QTY, SL_MIN_PT, TP_RR_RATIO,
+    FIXED_QTY, SL_MIN_PT, TP_RR_RATIO, RISK_PCT,
     FIRE_CANDLE_START_UTC, FIRE_CANDLE_END_UTC,
     TRADE_START_UTC, TRADE_END_UTC,
     FIRE_MIN_BODY_RATIO,
@@ -273,12 +273,12 @@ export class Mom12Strategy {
 
         const tpPt = slPt * TP_RR_RATIO;  // TP = 3R
 
-        // 🎯 动态仓位: 每单风险 = 余额 × 1%
-        const bal = balance || 500;
-        const riskAmount = bal * 0.01;  // 1% 风险
+        // 🎯 动态仓位: 每单风险 = 余额 × RISK_PCT
+        const bal = balance || 150;
+        const riskAmount = bal * RISK_PCT;  // 10% 风险
         let qty = riskAmount / slPt;
         qty = Math.max(0.01, Math.round(qty * 1000) / 1000);  // 最小0.01, 精度3位
-        log(`💰 动态仓位: $${bal.toFixed(0)} × 1% = $${riskAmount.toFixed(1)} / ${slPt.toFixed(0)}pt = ${qty.toFixed(3)} ETH`);
+        log(`💰 动态仓位: $${bal.toFixed(0)} × ${(RISK_PCT * 100).toFixed(0)}% = $${riskAmount.toFixed(1)} / ${slPt.toFixed(0)}pt = ${qty.toFixed(3)} ETH`);
 
         // 窗口结束 = UTC 20:00
         const endTs = new Date();

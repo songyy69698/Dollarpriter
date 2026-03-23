@@ -80,6 +80,14 @@ export interface CausalSnapshot {
     ethPOCDir: "long" | "short" | "";  // POC方向 (>5pt多 <-5pt空)
     ethVPNodeCount: number;      // Volume Profile 活跃价格层级数
 
+    // ── V95 大单 Delta 引擎 ──
+    ethBigBuyDelta: number;      // 大单买入量 (>3 ETH)
+    ethBigSellDelta: number;     // 大单卖出量 (>3 ETH)
+    ethBigNetDelta: number;      // 大单净 Delta (正=机构买, 负=机构卖)
+    ethBigCVD: number;           // 累积大单 Delta (5min窗口)
+    ethBigRatio: number;         // 大单占总成交比例 (0-1)
+    ethBigOrderCount: number;    // 5min 内大单笔数
+
     // ── 延迟诊断 ──
     wsLatencyMs: number;
     wsLatencyAvg: number;
@@ -120,6 +128,16 @@ class SymbolTracker {
 
     deltaDirRing: number[] = [];
     readonly DELTA_DIR_MAX = 10;
+
+    // ═══ V95 大单过滤引擎 ═══
+    // 大单定义: >3 ETH (~$6K+), 滚动5分钟窗口
+    private readonly BIG_ORDER_THRESHOLD = 3.0;       // ETH 单位
+    private readonly BIG_ORDER_WINDOW_MS = 5 * 60_000; // 5 分钟窗口
+    private bigOrderRing: { ts: number; buyVol: number; sellVol: number }[] = [];
+    private bigOrderTotalBuy = 0;   // 5min 窗口内大单买入总量
+    private bigOrderTotalSell = 0;  // 5min 窗口内大单卖出总量
+    private totalVolInWindow = 0;   // 5min 窗口内总成交量
+    private bigVolInWindow = 0;     // 5min 窗口内大单成交量
 
     // ═══ V92 Volume Profile POC ═══
     // 真实成交数据 bin=1.0pt, 滚动4h窗口
@@ -200,6 +218,49 @@ class SymbolTracker {
         return (this.bidWallVol - oldVol) / oldVol;
     }
 
+    // ═══ V95 大单 Delta 引擎 ═══
+
+    /** 清理超过5分钟的大单记录 */
+    private cleanBigOrders() {
+        const cutoff = Date.now() - this.BIG_ORDER_WINDOW_MS;
+        while (this.bigOrderRing.length > 0 && this.bigOrderRing[0].ts < cutoff) {
+            const old = this.bigOrderRing.shift()!;
+            this.bigOrderTotalBuy -= old.buyVol;
+            this.bigOrderTotalSell -= old.sellVol;
+            this.bigVolInWindow -= (old.buyVol + old.sellVol);
+        }
+    }
+
+    /** 获取大单 Delta (5分钟窗口) */
+    getBigDelta(): { buyDelta: number; sellDelta: number; netDelta: number } {
+        this.cleanBigOrders();
+        return {
+            buyDelta: this.bigOrderTotalBuy,
+            sellDelta: this.bigOrderTotalSell,
+            netDelta: this.bigOrderTotalBuy - this.bigOrderTotalSell,
+        };
+    }
+
+    /** 累积大单 Delta (CVD, 5分钟窗口) — 正=机构持续买入, 负=机构持续卖出 */
+    getBigCVD(): number {
+        this.cleanBigOrders();
+        let cvd = 0;
+        for (const o of this.bigOrderRing) cvd += (o.buyVol - o.sellVol);
+        return cvd;
+    }
+
+    /** 大单成交占总成交比例 (0-1) */
+    getBigRatio(): number {
+        this.cleanBigOrders();
+        return this.totalVolInWindow > 0 ? this.bigVolInWindow / this.totalVolInWindow : 0;
+    }
+
+    /** 5分钟窗口内大单笔数 */
+    getBigOrderCount(): number {
+        this.cleanBigOrders();
+        return this.bigOrderRing.length;
+    }
+
     handleTrade(trades: any) {
         const now = Date.now();
         const tradeList = Array.isArray(trades) ? trades : [trades];
@@ -241,6 +302,19 @@ class SymbolTracker {
             if (this.deltaDirRing.length > this.DELTA_DIR_MAX) this.deltaDirRing.shift();
 
             this.lastPrice = tradePrice;
+
+            // ═══ V95 大单过滤: >3 ETH 的单独记录 ═══
+            this.totalVolInWindow += qty;
+            if (qty >= this.BIG_ORDER_THRESHOLD) {
+                const buyV = isBuyer ? qty : 0;
+                const sellV = isBuyer ? 0 : qty;
+                this.bigOrderRing.push({ ts: now, buyVol: buyV, sellVol: sellV });
+                this.bigOrderTotalBuy += buyV;
+                this.bigOrderTotalSell += sellV;
+                this.bigVolInWindow += qty;
+            }
+            // 每 200 笔交易清理一次大单窗口
+            if (this.deltaRing.length % 200 === 0) this.cleanBigOrders();
 
             // ═══ V92 Volume Profile: 每笔成交加入分桶 ═══
             const binPrice = Math.round(tradePrice / this.VP_BIN_SIZE) * this.VP_BIN_SIZE;
@@ -521,6 +595,21 @@ export class BitunixWSEngine {
             ...(() => {
                 const p = this.eth.getPOCData();
                 return { ethPOC: p.poc, ethPrevPOC: p.prevPOC, ethPOCSlope: p.slope, ethPOCDir: p.dir, ethVPNodeCount: p.nodeCount };
+            })(),
+
+            // V95 大单 Delta 引擎
+            // 注意: 当 SYMBOL=ETHUSDT 时, ETH数据流入 sol 追踪器
+            // 所以从 sol 读取大单数据 (= 主交易币种)
+            ...(() => {
+                const bd = this.sol.getBigDelta();
+                return {
+                    ethBigBuyDelta: bd.buyDelta,
+                    ethBigSellDelta: bd.sellDelta,
+                    ethBigNetDelta: bd.netDelta,
+                    ethBigCVD: this.sol.getBigCVD(),
+                    ethBigRatio: this.sol.getBigRatio(),
+                    ethBigOrderCount: this.sol.getBigOrderCount(),
+                };
             })(),
 
             // 延迟诊断

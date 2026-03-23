@@ -1,8 +1,8 @@
 /**
- * 🔥 V96 Fire Candle — 4H K线延续策略
+ * 🔥 V96 Fire Candle — 4H K线延续策略 (实盘测试版)
  * ═══════════════════════════════════════
  * UTC 08-12 强K线 → UTC 12-20 诱导回踩入场
- * 回测: $500→$1300 (+160%) 43笔 58%胜 PF2.30
+ * 回测: $150→$500 约36天 10%风险+5R
  */
 
 // ═══════════════════════════════════════
@@ -83,7 +83,7 @@ export const SL_ATR_MULT = 1.0;
 export const SL_MIN_PT = 20.0;              // V92R: 固定20pt
 export const SL_MAX_PT = 20.0;              // V92R: 固定20pt
 export const INITIAL_SL_PT = 20.0;          // V92R: SL=20固定
-export const TP_RR_RATIO = 3;               // V96: TP = 3R
+export const TP_RR_RATIO = 5;               // V96实测: TP = 5R (回测最优)
 export const BREAKEVEN_PT = 12.0;           // 浮盈 12pt → 移保本
 export const BREAKEVEN_SL_OFFSET = 3.0;     // 保本后 SL = 入场 + 3pt
 export const TRAILING_PT = 10.0;            // 跟踪距离 10pt
@@ -92,7 +92,7 @@ export const MAX_HOLD_BARS = 120;           // 10小时超时
 // ═══════════════════════════════════════
 // V92 动态仓位 (每单风险 ≤ 账户 1%)
 // ═══════════════════════════════════════
-export const RISK_PCT = 0.01;               // 每单最大亏损 = 账户 × 1%
+export const RISK_PCT = 0.10;               // V96实测: 每单最大亏损 = 账户 × 10%
 export const POS_SIZE_LEVERAGE = 15;        // 仓位计算用15x (保守)
 
 // ═══════════════════════════════════════
@@ -102,7 +102,7 @@ export const COOLDOWN_MS = 60_000;
 export const MIN_HOLD_MS = 5_000;
 export const WS_LAG_MAX_MS = 500;
 export const MAX_DAILY_TRADES = 1;           // V96: 每天最多1笔Fire Candle
-export const MAX_DAILY_LOSS = 150;           // V96: $150 日亏损限制
+export const MAX_DAILY_LOSS = 50;            // V96实测: $50 日亏损限制 ($150账户)
 
 // ═══════════════════════════════════════
 // Spread & Liquidity Gate

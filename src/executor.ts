@@ -1,9 +1,12 @@
 /**
- * ⚡ Bitunix 执行器 — V92 动态SL/TP + 保本跟踪
+ * ⚡ Bitunix 执行器 — V92 动态SL/TP + 保本跟踪 + 交易日志采集
  * ═══════════════════════════════════════════
  * MARKET 入场 + 动态SL(ATR) + TP(1:1.5RR) + 保本12+3 + 跟踪10
+ * 📊 每笔交易自动记录到 data/trades.jsonl (MuleRun策略优化用)
  */
 
+import { appendFileSync, mkdirSync, existsSync } from "fs";
+import { join } from "path";
 import {
     BITUNIX_BASE, SYMBOL, ETH_SYMBOL, LEVERAGE,
     INITIAL_SL_PT, BREAKEVEN_PT, BREAKEVEN_SL_OFFSET, TRAILING_PT,
@@ -15,6 +18,21 @@ function log(msg: string) {
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
     console.log(`${ts} [executor] ${msg}`);
 }
+
+/** 📊 入场时的策略上下文 — 用于交易日志分析 */
+export interface EntryContext {
+    atr: number;           // ATR(14) at entry
+    mtfScore: number;      // MTF共振评分 (-12 ~ +12)
+    fundingRate: number;   // Funding Rate
+    ema3: number;          // EMA(3)
+    ema7: number;          // EMA(7)
+    ema20: number;         // EMA(20)
+    volRatio: number;      // 成交量/均量
+    pocSlope: number;      // POC斜率
+}
+
+const TRADES_DIR = join(process.cwd(), "data");
+const TRADES_FILE = join(TRADES_DIR, "trades.jsonl");
 
 function genOrderTag(): string {
     return `D66_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -42,6 +60,7 @@ export class BitunixExecutor {
     private _entering = false;
 
     tradeLog: any[] = [];
+    private entryCtx: EntryContext | null = null;  // 📊 入场上下文
 
     // V92 动态风控状态
     breakevenTriggered = false;
@@ -57,6 +76,11 @@ export class BitunixExecutor {
     lastSlippage = 0;
     signalPrice = 0;
     highSlippage = false;
+
+    /** 📊 设置入场上下文（由 main.ts 在 executeEntry 前调用） */
+    setEntryContext(ctx: EntryContext) {
+        this.entryCtx = ctx;
+    }
     lastError = "";               // 最近一次 API 错误
 
     // ═══ 1. Keep-Alive 连接池 ═══
@@ -747,18 +771,57 @@ export class BitunixExecutor {
         this.dynamicTpPt = 0;
         this.tpOrderId = "";
         this.currentWindowName = "";
+        this.entryCtx = null;
     }
 
     private logTrade(reason: string, pnlPt: number, netPnlU: number) {
-        this.tradeLog.push({
+        const elapsed = Date.now() - this.entryTs;
+        const record = {
+            // ═══ 基础信息 ═══
             ts: Date.now(),
+            date: new Date().toISOString(),
             symbol: this.positionSymbol,
             side: this.positionSide,
-            entry: this.entryPrice,
+            window: this.currentWindowName,
+            dayOfWeek: new Date().getDay(),  // 0=Sun, 1=Mon...
+            // ═══ 价格 ═══
+            entryPrice: this.entryPrice,
+            signalPrice: this.signalPrice,
+            slippage: this.lastSlippage,
+            // ═══ 出场 ═══
             pnlPt,
             netPnlU,
             reason,
-        });
+            holdMinutes: +(elapsed / 60_000).toFixed(1),
+            bestProfitPt: this.bestProfitPt,
+            breakevenHit: this.breakevenTriggered,
+            // ═══ 风控参数 ═══
+            slPt: this.dynamicSlPt,
+            tpPt: this.dynamicTpPt,
+            qty: this.positionQty,
+            leverage: LEVERAGE,
+            // ═══ 入场时策略上下文 ═══
+            atr: this.entryCtx?.atr ?? 0,
+            mtfScore: this.entryCtx?.mtfScore ?? 0,
+            fundingRate: this.entryCtx?.fundingRate ?? 0,
+            ema3: this.entryCtx?.ema3 ?? 0,
+            ema7: this.entryCtx?.ema7 ?? 0,
+            ema20: this.entryCtx?.ema20 ?? 0,
+            volRatio: this.entryCtx?.volRatio ?? 0,
+            pocSlope: this.entryCtx?.pocSlope ?? 0,
+        };
+
+        // 内存日志 (保持原逻辑)
+        this.tradeLog.push(record);
         if (this.tradeLog.length > 100) this.tradeLog = this.tradeLog.slice(-50);
+
+        // 📊 写入 JSONL 文件 (增量追加)
+        try {
+            if (!existsSync(TRADES_DIR)) mkdirSync(TRADES_DIR, { recursive: true });
+            appendFileSync(TRADES_FILE, JSON.stringify(record) + "\n");
+            log(`📊 交易日志已写入 data/trades.jsonl (${reason.slice(0, 20)}...)`);
+        } catch (e) {
+            log(`⚠️ 写入交易日志失败: ${e}`);
+        }
     }
 }

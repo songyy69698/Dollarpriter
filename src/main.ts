@@ -12,6 +12,7 @@ import { BitunixExecutor } from "./executor";
 import type { EntryContext } from "./executor";
 import { MtfPocEngine } from "./mtf-poc";
 import { notifyTG, pollTGCommands, initTG } from "./telegram";
+import { SelfReflector } from "./self-reflect";
 import {
     LEVERAGE, MARGIN_PER_TRADE, FIXED_QTY,
     INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
@@ -101,6 +102,7 @@ class DollarprinterBot {
         this.tgCommandLoop();
         setInterval(() => this.hourlyReport(), 3600_000);
         setInterval(() => this.dailyReset(), 60_000);
+        setInterval(() => this.dailyAutoReflect(), 60_000);
 
         log("🟢 V96 就绪 — 发 1 激活");
     }
@@ -131,6 +133,13 @@ class DollarprinterBot {
             if (this.executor.inPosition) return;
             if (this.dailyTrades >= MAX_DAILY_TRADES) return;
             if (this.dailyPnl <= -MAX_DAILY_LOSS) return;
+
+            // 🧠 连亏保护: 连亏≥3笔 → 自动暂停60秒
+            const refResult = SelfReflector.quickAnalyze(3);
+            if (refResult.isLossStreak) {
+                log(`🧠 连亏${Math.abs(refResult.streakCount)}笔, 60秒冷静期`);
+                return;
+            }
 
             // 刷新 K线数据
             await this.strategy.refreshKlines();
@@ -302,6 +311,8 @@ class DollarprinterBot {
                 "r": async () => { await this.reflect(); },
                 "反思": async () => { await this.reflect(); },
                 "/reflect": async () => { await this.reflect(); },
+                "rr": async () => { await this.deepReflect(); },
+                "/deepreflect": async () => { await this.deepReflect(); },
                 "x": async () => {
                     const s = this.ws.getSnapshot();
                     const r = await this.executor.forceCloseAll(s.ethPrice);
@@ -320,8 +331,8 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V92+MTF 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nm MTF详情 | x 强平`); },
-                "/help": async () => { await notifyTG(`📖 *V92+MTF 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思\nm MTF详情 | x 强平`); },
+                "h": async () => { await notifyTG(`📖 *V96 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
+                "/help": async () => { await notifyTG(`📖 *V96 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
                 "m": async () => { await this.sendMtfReport(); },
                 "/mtf": async () => { await this.sendMtfReport(); },
             });
@@ -370,10 +381,10 @@ class DollarprinterBot {
         );
     }
 
-    /** 🧠 反思指令: 分析当前6重过滤状态, 3行重点回覆 */
+    /** 🧠 反思指令: 市场快照 + 自身表现分析 */
     private async reflect() {
         try {
-            // 拉最近48根1h K线
+            // ═══ Part 1: 市场快照 ═══
             const now = Date.now();
             const url = `${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=1h&startTime=${now - 48 * 3600000}&endTime=${now}&limit=48`;
             const res = await fetch(url);
@@ -399,42 +410,61 @@ class DollarprinterBot {
             for (let i = n - 8; i < n - 4; i++) { if (kl[i].v > maxV2) { maxV2 = kl[i].v; pocP2 = (kl[i].h + kl[i].l + kl[i].c) / 3; } }
             const pocSlope = pocP - pocP2;
 
-            // 日振幅已用%
+            // 日振幅
             const todayBars = kl.slice(-Math.min(n, 24));
             const dayHi = Math.max(...todayBars.map(k => k.h));
             const dayLo = Math.min(...todayBars.map(k => k.l));
             const dayRange = dayHi - dayLo;
 
-            // 过去2天涨跌
             const chg48h = kl[n - 1].c - kl[Math.max(0, n - 48)].c;
 
-            // 6重过滤状态
             const pocDir = pocSlope > 5 ? "↑多" : pocSlope < -5 ? "↓空" : "→不明";
             const rsiStatus = rsi > 60 ? "⚠️超买" : rsi < 40 ? "⚠️超卖" : "✅中性";
             const atrStatus = atr < 3 ? "⚠️太低" : "✅" + atr.toFixed(0);
             const pocChase = Math.abs(pocSlope) > 50 ? "⚠️不追" : "✅";
             const fatigue = Math.abs(chg48h) > 150 ? "⚠️疲劳" : "✅";
 
-            // 下个窗口
-            const utc8H = (new Date().getUTCHours() + 8) % 24;
-            const nextWin = utc8H < 8 ? "08" : utc8H < 15 ? "15" : utc8H < 22 ? "22" : "明08";
-
-            // 判断: 能不能做?
             const canTrade = rsi >= 40 && rsi <= 60 && atr >= 3 && Math.abs(pocSlope) <= 50 && Math.abs(chg48h) <= 150 && pocSlope !== 0;
             const action = !canTrade ? "⏸️观望" : pocSlope > 5 ? "📈做多" : "📉做空";
 
-            // 3行重点
             const line1 = `🧠 ETH $${price.toFixed(0)} RSI=${rsi.toFixed(0)}${rsiStatus} ATR=${atrStatus}`;
             const line2 = `POC${pocDir}(${pocSlope >= 0 ? "+" : ""}${pocSlope.toFixed(0)}) ${pocChase} 48h${chg48h >= 0 ? "+" : ""}${chg48h.toFixed(0)}pt ${fatigue}`;
-            const line3 = `${nextWin}窗→${action} 日振${dayRange.toFixed(0)}pt`;
+            const line3 = `日振${dayRange.toFixed(0)}pt → ${action}`;
 
-            // MTF 共振摘要
-            const mtfResult = this.mtf.getScore(price);
-            const mtfLine = `🔬 MTF: ${mtfResult.score >= 0 ? "+" : ""}${mtfResult.score}/12 ${mtfResult.dir === "long" ? "↑多" : mtfResult.dir === "short" ? "↓空" : "→不明"} POC=$${mtfResult.nearestPOC.toFixed(0)} 回调=${mtfResult.pullbackStatus}`;
+            // ═══ Part 2: 自身表现 ═══
+            const selfResult = SelfReflector.quickAnalyze(7);
 
-            await notifyTG(`${line1}\n${line2}\n${line3}\n${mtfLine}`);
+            // 合并输出: 市场 + 自身
+            await notifyTG(`${line1}\n${line2}\n${line3}\n──────────\n${selfResult.report}`);
         } catch (e) {
             await notifyTG(`⚠️ 反思失败: ${e}`);
+        }
+    }
+
+    /** 🧠 深度反思: 完整交易日志分析 */
+    private async deepReflect() {
+        try {
+            const result = SelfReflector.quickAnalyze(7);
+            await notifyTG(result.deepReport);
+        } catch (e) {
+            await notifyTG(`⚠️ 深度反思失败: ${e}`);
+        }
+    }
+
+    /** 🧠 每日自动反思 (UTC 07:55 = 交易日开始前) */
+    private _lastAutoReflectDate = "";
+    private async dailyAutoReflect() {
+        const now = new Date();
+        const utcH = now.getUTCHours();
+        const utcM = now.getUTCMinutes();
+        const today = now.toISOString().slice(0, 10);
+
+        // UTC 07:55 触发
+        if (utcH === 7 && utcM >= 55 && utcM < 56 && today !== this._lastAutoReflectDate) {
+            this._lastAutoReflectDate = today;
+            log("🧠 每日自动反思触发");
+            const result = SelfReflector.quickAnalyze(7);
+            await notifyTG(`📅 *每日自动反思*\n${result.report}`);
         }
     }
 }
