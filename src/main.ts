@@ -13,6 +13,7 @@ import type { EntryContext } from "./executor";
 import { MtfPocEngine } from "./mtf-poc";
 import { notifyTG, pollTGCommands, initTG } from "./telegram";
 import { SelfReflector } from "./self-reflect";
+import { AgentCouncil } from "./agent-council";
 import {
     LEVERAGE, MARGIN_PER_TRADE, FIXED_QTY,
     INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
@@ -21,6 +22,7 @@ import {
     MOM12_THRESHOLD, VOL_MULTIPLIER, BINANCE_BASE,
     SL_MIN_PT, SL_MAX_PT, TP_RR_RATIO,
     HOLD_EXTEND_PT,
+    COUNCIL_AUTO_DAILY, COUNCIL_AUTO_UTC_HOUR, COUNCIL_DAYS,
     MTF_MIN_SCORE,
 } from "./config";
 
@@ -127,8 +129,12 @@ class DollarprinterBot {
     }
 
     // ═══ 策略循环 ═══
+    // 🛑 KILL SWITCH: 设为 false 停止所有交易, CEO 确认修改完成后改回 true
+    private static readonly TRADING_ENABLED = false;
+
     private strategyLoop() {
         setInterval(async () => {
+            if (!DollarprinterBot.TRADING_ENABLED) return;
             if (this.paused) return;
             if (this.executor.inPosition) return;
             if (this.dailyTrades >= MAX_DAILY_TRADES) return;
@@ -335,10 +341,13 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
-                "/help": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平`); },
+                "h": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
+                "/help": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
                 "m": async () => { await this.sendMtfReport(); },
                 "/mtf": async () => { await this.sendMtfReport(); },
+                "council": async () => { await this.runCouncil(false); },
+                "/council": async () => { await this.runCouncil(false); },
+                "cq": async () => { await this.runCouncil(true); },
                 "t": async () => {
                     const snap = this.ws.getSnapshot();
                     if (snap.ethPrice <= 0) { await notifyTG("⚠️ 无价格数据"); return; }
@@ -479,18 +488,47 @@ class DollarprinterBot {
 
     /** 🧠 每日自动反思 (UTC 07:55 = 交易日开始前) */
     private _lastAutoReflectDate = "";
+    private _lastAutoCouncilDate = "";
     private async dailyAutoReflect() {
         const now = new Date();
         const utcH = now.getUTCHours();
         const utcM = now.getUTCMinutes();
         const today = now.toISOString().slice(0, 10);
 
-        // UTC 07:55 触发
+        // UTC 07:55 触发反思
         if (utcH === 7 && utcM >= 55 && utcM < 56 && today !== this._lastAutoReflectDate) {
             this._lastAutoReflectDate = today;
             log("🧠 每日自动反思触发");
             const result = SelfReflector.quickAnalyze(7);
             await notifyTG(`📅 *每日自动反思*\n${result.report}`);
+        }
+
+        // UTC 07:50 触发 Agent Council (每日自动)
+        if (COUNCIL_AUTO_DAILY && utcH === COUNCIL_AUTO_UTC_HOUR && utcM >= 50 && utcM < 51 && today !== this._lastAutoCouncilDate) {
+            this._lastAutoCouncilDate = today;
+            log("🏛️ 每日自动 Agent Council 触发");
+            await this.runCouncil(true);  // 快速版
+        }
+    }
+
+    /** 🏛️ Agent Council 辩论 */
+    private _councilRunning = false;
+    private async runCouncil(quick: boolean) {
+        if (this._councilRunning) {
+            await notifyTG("⏳ Council 正在运行中，请稍候...");
+            return;
+        }
+        this._councilRunning = true;
+        try {
+            await notifyTG(quick ? "⚡ *Quick Council 召开中...*" : "🏛️ *Agent Council 召开中...*");
+            const result = quick
+                ? await AgentCouncil.runQuickCouncil(COUNCIL_DAYS)
+                : await AgentCouncil.runCouncil(COUNCIL_DAYS);
+            await notifyTG(result.tgReport);
+        } catch (e) {
+            await notifyTG(`❌ Council 失败: ${e}`);
+        } finally {
+            this._councilRunning = false;
         }
     }
 }
