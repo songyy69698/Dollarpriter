@@ -1,8 +1,8 @@
 /**
- * 🔥 Dollarprinter V104 混合止盈版 — $150→$500
+ * 🤖 Dollarprinter V200 五模组 Bot
  * ═════════════════════════════════════════════
- * 回测: $500→$1300 (+160%) | 43笔 58%胜 PF2.30
- * UTC 08-12 4H K线判方向 → UTC 12-20 诱导回踩入场
+ * 回测: $500→$925 (+185%) | 26笔 77%胜 PF5.71
+ * 时间过滤 + SVP感知 + 进场触发 + 执行效能 + 凯利风控
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -64,9 +64,9 @@ class DollarprinterBot {
         await initTG();
 
         log("════════════════════════════════════════════");
-        log("  🔥 V104 混合止盈版 | $150→$500 | 2ETH");
-        log(`  📊 UTC 08-12 判方向 | UTC 12-20 等诱导回踩`);
-        log(`  🛡️ SL=动态[15-22pt] | TP=分批+35pt锁50% | ${LEVERAGE}x`);
+        log("  🤖 V200 五模组 Bot");
+        log(`  📊 POC位移+进场触发+凯利风控`);
+        log(`  🛡️ SL=2%止损 | TP=均波70% | 3H时效律 | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
         this.ws.start();
@@ -75,16 +75,15 @@ class DollarprinterBot {
         const bal = await this.executor.getBalance();
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
-        // V104挑战版: 不需要 MTF-POC
-        log(`  📊 V104 混合止盈版引擎就绪`);
+        // V200: 五模组策略引擎
+        log(`  📊 V200 五模组引擎就绪`);
 
         await notifyTG(
-            `🔥 *V104 混合止盈版 $250→$500*\n` +
+            `🤖 *V200 五模组 Bot*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 UTC 08-12 4H K线判方向\n` +
-            `🛡️ SL=动态[15-22pt] | TP=+35pt锁50%+trailing\n` +
-            `♠️ 固定2ETH | 达$500停止\n` +
-            `⏰ UTC 12-20 等诱导回踩\n` +
+            `📊 POC位移+进场触发+凯利风控\n` +
+            `🛡️ SL=2%止损 | TP=均波70% | 3H时效律\n` +
+            `🧊 走三退一 | 亚盘12:00强平\n` +
             `发 *1* 激活 | *r* 反思`,
         );
 
@@ -106,7 +105,7 @@ class DollarprinterBot {
         setInterval(() => this.dailyReset(), 60_000);
         setInterval(() => this.dailyAutoReflect(), 60_000);
 
-        log("🟢 V104 就绪 — 发 1 激活");
+        log("🟢 V200 五模组就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -130,7 +129,7 @@ class DollarprinterBot {
 
     // ═══ 策略循环 ═══
     // 🛑 KILL SWITCH: 设为 false 停止所有交易, CEO 确认修改完成后改回 true
-    private static readonly TRADING_ENABLED = false;
+    private static readonly TRADING_ENABLED = true;
 
     private strategyLoop() {
         setInterval(async () => {
@@ -191,13 +190,14 @@ class DollarprinterBot {
 
     private async sendSignalNotification(sig: Mom12Signal) {
         const msg =
-            `🔥 *V104 混合止盈版*\n` +
+            `🤖 *V200 五模组*\n` +
             `──────────\n` +
             `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
             `价格: $${sig.price.toFixed(2)}\n` +
+            `窗口: ${sig.windowName}\n` +
             `──────────\n` +
-            `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt (5R)\n` +
-            `仓位: ${sig.dynamicQty.toFixed(2)} ETH\n` +
+            `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt\n` +
+            `仓位: ${sig.dynamicQty.toFixed(2)} ETH (Kelly)\n` +
             `──────────\n` +
             `回 *y* → 确认开单\n` +
             `3分钟不回 → 自动开`;
@@ -255,6 +255,8 @@ class DollarprinterBot {
                         if (r.ok) {
                             this.dailyTrades++; this.dailyPnl += r.netPnlU;
                             this.totalTrades++; this.totalPnl += r.netPnlU;
+                            this.strategy.recordTradeResult(r.netPnlU);
+                            this.strategy.clearActivePosition();
                             const emoji = r.netPnlU > 0 ? "✅" : "❌";
                             await notifyTG(
                                 `${emoji} *窗口收盘平仓*\n` +
@@ -275,10 +277,32 @@ class DollarprinterBot {
             if (!this.executor.inPosition) return;
             const s = this.ws.getSnapshot();
             if (s.ethPrice <= 0) return;
+
+            // V200: 亚盘仓位 12:00 UTC+8 强制平仓
+            if (this.strategy.shouldNoonForceClose()) {
+                log("🕛 亚盘仓位12:00强平触发!");
+                const r = await this.executor.forceCloseAll(s.ethPrice);
+                if (r.ok) {
+                    this.dailyTrades++; this.dailyPnl += r.netPnlU;
+                    this.totalTrades++; this.totalPnl += r.netPnlU;
+                    this.strategy.recordTradeResult(r.netPnlU);
+                    this.strategy.clearActivePosition();
+                    const emoji = r.netPnlU > 0 ? "✅" : "❌";
+                    await notifyTG(
+                        `${emoji} *🕛 亚盘12:00强平*\n` +
+                        `净PnL: ${r.netPnlU >= 0 ? "+" : ""}${r.netPnlU.toFixed(2)}U\n` +
+                        `今日: ${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(2)}U`,
+                    );
+                }
+                return;
+            }
+
             const r = await this.executor.checkPosition(s.ethPrice);
             if (r.closed) {
                 this.dailyTrades++; this.dailyPnl += r.netPnlU;
                 this.totalTrades++; this.totalPnl += r.netPnlU;
+                this.strategy.recordTradeResult(r.netPnlU);
+                this.strategy.clearActivePosition();
                 const emoji = r.netPnlU > 0 ? "✅" : "❌";
                 await notifyTG(
                     `${emoji} *ETH 平仓*\n${r.reason}\n` +
@@ -298,8 +322,8 @@ class DollarprinterBot {
             polling = true;
             try {
                 lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V104 混合止盈版 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V104 混合止盈版 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V200 五模组 Bot 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V200 五模组 Bot 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {
@@ -329,6 +353,8 @@ class DollarprinterBot {
                     if (r.ok) {
                         this.dailyTrades++; this.dailyPnl += r.netPnlU;
                         this.totalTrades++; this.totalPnl += r.netPnlU;
+                        this.strategy.recordTradeResult(r.netPnlU);
+                        this.strategy.clearActivePosition();
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
@@ -338,11 +364,13 @@ class DollarprinterBot {
                     if (r.ok) {
                         this.dailyTrades++; this.dailyPnl += r.netPnlU;
                         this.totalTrades++; this.totalPnl += r.netPnlU;
+                        this.strategy.recordTradeResult(r.netPnlU);
+                        this.strategy.clearActivePosition();
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
-                "/help": async () => { await notifyTG(`📖 *V104 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
+                "h": async () => { await notifyTG(`📖 *V200 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
+                "/help": async () => { await notifyTG(`📖 *V200 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
                 "m": async () => { await this.sendMtfReport(); },
                 "/mtf": async () => { await this.sendMtfReport(); },
                 "council": async () => { await this.runCouncil(false); },
@@ -380,7 +408,7 @@ class DollarprinterBot {
         const upMs = Date.now() - this.startTime;
         const upH = Math.floor(upMs / 3600_000), upM = Math.floor((upMs % 3600_000) / 60_000);
 
-        let m = `🎯 *V104 混合止盈版*\n──────────\n`;
+        let m = `🤖 *V200 五模组 Bot*\n──────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${upH}h${upM}m\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
@@ -410,7 +438,7 @@ class DollarprinterBot {
         const b = await this.executor.getBalance();
         const upH = Math.floor((Date.now() - this.startTime) / 3600_000);
         await notifyTG(
-            `💓 *V104挑战* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
+            `💓 *V200* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
             `ETH $${s.ethPrice.toFixed(2)} | $${b.toFixed(2)}\n` +
             `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`,
         );

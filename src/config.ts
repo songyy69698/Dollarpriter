@@ -70,7 +70,7 @@ export const FIRE_CANDLE_END_UTC = 12;     // Fire Candle 结束 UTC 12:00
 export const TRADE_START_UTC = 12;          // 交易窗口开始 UTC 12:00
 export const TRADE_END_UTC = 20;            // 交易窗口结束 UTC 20:00
 export const FIRE_MIN_BODY_RATIO = 0.35;   // V104: 实体占比 ≥35%
-export const FIRE_MIN_RANGE_PT = 35;       // V104: Fire范围 ≥35pt (三月6笔100%胜)
+export const FIRE_MIN_RANGE_PT = 30;       // V104.1: Fire范围 ≥30pt (原35pt，降低以增加交易机会)
 
 // V104: 诱导回踩过滤
 export const INDUCEMENT_MIN_DEPTH_PT = 5;   // V104: 诱导深度 ≥5pt (回测最优)
@@ -157,3 +157,10 @@ export const MTF_MIN_SCORE = 6;                 // 至少6/12个TF方向一致
 export const MTF_REFRESH_MS = 60_000;           // 每60秒刷新
 export const PULLBACK_ZONE_PT = 5;              // POC ±5pt = 回调到位
 export const MAX_CHASE_PT = 15;                 // 超过POC 15pt = 不追
+
+// ═══════════════════════════════════════
+// 🏛️ Agent Council (多Agent策略优化)
+// ═══════════════════════════════════════
+export const COUNCIL_AUTO_DAILY = true;         // 每日自动运行Council
+export const COUNCIL_AUTO_UTC_HOUR = 7;         // UTC 07:50 自动触发 (交易日前)
+export const COUNCIL_DAYS = 14;                 // 默认分析天数
