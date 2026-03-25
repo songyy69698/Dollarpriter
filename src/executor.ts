@@ -409,7 +409,7 @@ export class BitunixExecutor {
     }
 
     // ═══════════════════════════════════════════════
-    // V90 混合出场: SL → 保本 → 跟踪
+    // V200 五模组出场: 硬SL → 均波TP → 3H时效律
     // ═══════════════════════════════════════════════
     async checkPosition(
         currentPrice: number,
@@ -439,80 +439,17 @@ export class BitunixExecutor {
             return { closed: false, reason: "", netPnlU: 0, symbol: "" };
         }
 
-        // ═══ Layer 2: 保本线 — V104: +6pt → SL+1.5pt ═══
-        if (!reason && !this.breakevenTriggered && pnlPt >= BREAKEVEN_PT) {
-            this.breakevenTriggered = true;
-            const newSl = this.positionSide === "long"
-                ? this.entryPrice + BREAKEVEN_SL_OFFSET
-                : this.entryPrice - BREAKEVEN_SL_OFFSET;
-
-            log(`🛡️ 保本触发! +${pnlPt.toFixed(prec.price)}pt ≥ ${BREAKEVEN_PT}pt → SL→${newSl.toFixed(prec.price)}`);
-
-            if (this.slOrderId) await this.cancelOrder(sym, this.slOrderId);
-            const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
-            const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, newSl, prec);
-            this.currentSlPrice = newSl;
-            if (slOk) log(`✅ 保本 SL: ${newSl.toFixed(prec.price)}`);
-            else log("⚠️ 保本 SL 挂单失败!");
+        // ═══ Layer 2: V200 均波 TP — 达到 avgRange*70% 即平仓 ═══
+        if (!reason && pnlPt >= this.dynamicTpPt && this.dynamicTpPt > 0) {
+            reason = `🎯 均波TP: +${pnlPt.toFixed(prec.price)}pt ≥ ${this.dynamicTpPt.toFixed(1)}pt`;
         }
 
-        // ═══ Layer 3: V104 分批止盈 — +35pt 平50% ═══
-        if (!reason && !this.partialClosed && pnlPt >= PARTIAL_TP_PT) {
-            const halfQty = Math.floor(this.positionQty * 5) / 10; // 50%精度
-            if (halfQty > 0) {
-                log(`🎯 分批止盈! +${pnlPt.toFixed(1)}pt ≥ ${PARTIAL_TP_PT}pt → 平${halfQty}/${this.positionQty}`);
-                const closedQty = await this.closePartialPosition(sym, halfQty);
-                if (closedQty > 0) {
-                    this.partialClosed = true;
-                    this.positionQty -= closedQty;
-                    const partialGross = pnlPt * closedQty;
-                    const partialFee = (this.entryPrice * closedQty + currentPrice * closedQty) * TAKER_FEE;
-                    log(`✅ 半仓已平: ${closedQty} ${sym} | +${(partialGross - partialFee).toFixed(2)}U | 剩余${this.positionQty}`);
-                    // 更新SL挂单为剩余数量
-                    if (this.slOrderId) {
-                        await this.cancelOrder(sym, this.slOrderId);
-                        const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
-                        const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, this.currentSlPrice, prec);
-                        if (slOk) log(`✅ SL更新为剩余量: ${this.positionQty}`);
-                    }
-                }
-            }
+        // ═══ Layer 3: V200 3H 时效律 — 持仓超 3 小时自动平仓 ═══
+        if (!reason && elapsed >= 10_800_000) { // 3小时 = 10,800,000ms
+            reason = `⏰ 3H时效律: 持仓${(elapsed / 60_000).toFixed(0)}min → 自动平仓 (${pnlPt >= 0 ? "+" : ""}${pnlPt.toFixed(1)}pt)`;
         }
 
-        // ═══ Layer 4: V104 跟踪止盈 — trailing -12pt ═══
-        if (!reason && this.breakevenTriggered && this.bestProfitPt > BREAKEVEN_PT) {
-            const trailSl = this.positionSide === "long"
-                ? this.entryPrice + this.bestProfitPt - TRAILING_PT
-                : this.entryPrice - this.bestProfitPt + TRAILING_PT;
-
-            // 只向有利方向移动 SL
-            const shouldUpdate = this.positionSide === "long"
-                ? trailSl > this.currentSlPrice
-                : trailSl < this.currentSlPrice;
-
-            if (shouldUpdate) {
-                log(`📈 跟踪移动: 最优+${this.bestProfitPt.toFixed(1)}pt → SL=${trailSl.toFixed(prec.price)}`);
-                if (this.slOrderId) await this.cancelOrder(sym, this.slOrderId);
-                const closeSide = this.positionSide === "long" ? "SELL" : "BUY";
-                const slOk = await this.placeStopMarket(sym, closeSide, this.positionQty, trailSl, prec);
-                if (slOk) this.currentSlPrice = trailSl;
-            }
-
-            // 跌破跟踪 SL → 平仓
-            if (this.positionSide === "long" && currentPrice <= this.currentSlPrice) {
-                reason = `📈 跟踪止盈: 最优+${this.bestProfitPt.toFixed(1)}pt → 回撤到 ${pnlPt.toFixed(1)}pt`;
-            }
-            if (this.positionSide === "short" && currentPrice >= this.currentSlPrice) {
-                reason = `📈 跟踪止盈: 最优+${this.bestProfitPt.toFixed(1)}pt → 回撤到 ${pnlPt.toFixed(1)}pt`;
-            }
-        }
-
-        // ═══ Layer 5: V104 全平 — +100pt 5R ═══
-        if (!reason && pnlPt >= FULL_TP_PT) {
-            reason = `🏆 5R全平: +${pnlPt.toFixed(1)}pt ≥ ${FULL_TP_PT}pt`;
-        }
-
-        // ═══ Layer 6: 高滑点激进出场 ═══
+        // ═══ Layer 4: 高滑点安全出场 ═══
         if (!reason && this.highSlippage && pnlPt >= 1.0) {
             reason = `🚨 高滑点出场 [Slip=${this.lastSlippage.toFixed(2)}pt]: +${pnlPt.toFixed(prec.price)}pt`;
         }
