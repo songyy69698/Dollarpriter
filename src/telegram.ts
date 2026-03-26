@@ -3,8 +3,8 @@
  * ═══════════════════════════════════════
  */
 
-const TG_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+const TG_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.TG_BOT_TOKEN || "";
+const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.TG_CHAT_ID || "";
 
 function log(msg: string) {
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false });

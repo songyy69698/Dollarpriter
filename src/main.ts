@@ -47,9 +47,16 @@ class DollarprinterBot {
     private signalNotified = false;
 
     constructor() {
-        const apiKey = process.env.BITUNIX_API_KEY || "";
-        const secretKey = process.env.BITUNIX_SECRET_KEY || "";
-        if (!apiKey || !secretKey) { log("❌ 缺少 API Key"); process.exit(1); }
+        const apiKey = process.env.BITUNIX_API_KEY || process.env.apikey || process.env.apiKey || process.env.API_KEY || "";
+        const secretKey = process.env.BITUNIX_SECRET_KEY || process.env.secretkey || process.env.secretKey || process.env.SECRET_KEY || "";
+        if (!apiKey || !secretKey) {
+            log("🚨 [致命错误] 缺少 BITUNIX_API_KEY 或 BITUNIX_SECRET_KEY！");
+            log("⚠️ 请进入 Zeabur 面板 -> Settings -> Variables，补充缺少的变量。");
+            log("⏳ 进程将挂起 60 秒然后重启，避免触发 Zeabur 的极速 CrashLoopBackOff 熔断...");
+            // 使用 Bun.sleep 会更好，但构造函数不能 async，故抛出异常或在 start 里拦截
+            // 改进：这里不直接退出，记录为 invalidEnv，在 start() 中进行延时和退出
+            this.invalidEnv = true;
+        }
         this.ws = new BitunixWSEngine();
         this.strategy = new Mom12Strategy();
         this.executor = new BitunixExecutor(apiKey, secretKey);
@@ -57,7 +64,13 @@ class DollarprinterBot {
         this.battlefield = new BattlefieldMarker();
     }
 
+    private invalidEnv = false;
+
     async start() {
+        if (this.invalidEnv) {
+            await new Promise(r => setTimeout(r, 60000));
+            process.exit(1);
+        }
         // 🔧 启动时清理 TG 旧连接 (防409)
         await initTG();
 
