@@ -38,18 +38,17 @@ interface ParamGuardrail {
 }
 
 const GUARDRAILS: ParamGuardrail[] = [
-    // SL 相关
+    // V200 SL 相关
     { key: "SL_MIN_PT",       displayName: "SL下限",     min: 8,   max: 25,  maxStep: 3,   type: "int" },
-    { key: "SL_MAX_PT",       displayName: "SL上限",     min: 15,  max: 35,  maxStep: 3,   type: "int" },
-    { key: "INITIAL_SL_PT",   displayName: "初始SL",     min: 10,  max: 30,  maxStep: 3,   type: "int" },
-    // 保本/TP 相关
-    { key: "BREAKEVEN_PT",    displayName: "保本触发",   min: 8,   max: 20,  maxStep: 2,   type: "int" },
-    { key: "TRAILING_PT",     displayName: "追踪距离",   min: 8,   max: 20,  maxStep: 2,   type: "int" },
+    { key: "SL_MAX_PT",       displayName: "SL上限",     min: 15,  max: 50,  maxStep: 5,   type: "int" },
+    // V200 TP 相关
+    { key: "AVG_RANGE_TP_MULT", displayName: "均波TP倍数", min: 0.5, max: 1.0, maxStep: 0.1, type: "float" },
     // 每日限制
     { key: "MAX_DAILY_TRADES", displayName: "每日最大笔数", min: 1,  max: 8,   maxStep: 1,   type: "int" },
     { key: "MAX_DAILY_LOSS",  displayName: "每日亏损限",  min: 30,  max: 200, maxStep: 20,  type: "int" },
-    // 仓位（ETH 数量）
-    { key: "FIXED_QTY",       displayName: "固定仓位ETH", min: 0.5, max: 5,   maxStep: 0.5, type: "float" },
+    // V200 凯利风控
+    { key: "MAX_QTY",         displayName: "最大仓位ETH", min: 0.5, max: 10,  maxStep: 1.0, type: "float" },
+    { key: "KELLY_MAX_FRACTION", displayName: "凯利上限%", min: 0.1, max: 0.5, maxStep: 0.05, type: "float" },
 ];
 
 /** 获取护栏定义 */

@@ -143,26 +143,19 @@ function utc8Date(ts: number): string { return new Date(ts + 8 * 3600000).toISOS
 
 function calcPOC(k: K): number { return (k.h + k.l + k.c) / 3; }
 
-function runV200(kl5m: K[], k1h: K[], k4h: K[]): { trades: Trade[]; pnl: number } {
+function runV200(kl5m: K[], k1h: K[], k4h: K[]): { trades: Trade[]; pnl: number; pocLog: string[] } {
     const trades: Trade[] = [];
+    const pocLog: string[] = [];
     let bal = CAP;
     const usedWindows = new Set<string>();
 
     // 共用参数
     const MAX_HOLD_BARS = 36; // 3小时 = 36根5m
 
-    // avgH1Range
+    // avgH1Range — 只用入场前的 1h 数据
     const avgRange = k1h.length >= 14
         ? k1h.slice(-14).reduce((s, k) => s + (k.h - k.l), 0) / 14 : 30;
     const tpPt = avgRange * 0.7;
-
-    // POC 方向
-    let pocDir = "";
-    if (k4h.length >= 2) {
-        const shift = calcPOC(k4h[k4h.length - 1]) - calcPOC(k4h[k4h.length - 2]);
-        if (shift > 5) pocDir = "long";
-        else if (shift < -5) pocDir = "short";
-    }
 
     for (let i = 50; i < kl5m.length; i++) {
         const k = kl5m[i];
@@ -182,7 +175,19 @@ function runV200(kl5m: K[], k1h: K[], k4h: K[]): { trades: Trade[]; pnl: number 
         const winKey = `${day}_${activeWindow.name}`;
         if (usedWindows.has(winKey)) continue;
 
-        // 模组二: POC 方向
+        // ═══ 模组二: POC 方向 (逐 bar 实时计算) ═══
+        // 只用入场时刻已完全关闭的 4H K线 (closeTs <= 当前 bar 开盘时间)
+        const closedK4h = k4h.filter(kk => kk.ts + 4 * 3600000 <= k.ts);
+        let pocDir = "";
+        let pocShift = 0;
+        if (closedK4h.length >= 2) {
+            const lastClosed = closedK4h[closedK4h.length - 1];
+            const prevClosed = closedK4h[closedK4h.length - 2];
+            pocShift = calcPOC(lastClosed) - calcPOC(prevClosed);
+            if (pocShift > 5) pocDir = "long";
+            else if (pocShift < -5) pocDir = "short";
+        }
+
         if (!pocDir) continue;
         let dir: "long" | "short" = pocDir as any;
 
@@ -262,6 +267,36 @@ function runV200(kl5m: K[], k1h: K[], k4h: K[]): { trades: Trade[]; pnl: number 
         if (!triggered) continue;
         if (avgVol > 0 && k.v < avgVol * 0.8) continue;
 
+        // ═══ 当前4H方向对齐过滤 ═══
+        const inProgressK4h = k4h.filter(kk => kk.ts <= k.ts && kk.ts + 4 * 3600000 > k.ts);
+        const ref4h = closedK4h[closedK4h.length - 1];
+        const range4h = ref4h.h - ref4h.l;
+        const pricePos = range4h > 0 ? (k.c - ref4h.l) / range4h : 0.5;
+        if (inProgressK4h.length > 0) {
+            const curr4h = inProgressK4h[0];
+            const curr4hBars = kl5m.filter(b => b.ts >= curr4h.ts && b.ts <= k.ts);
+            if (curr4hBars.length >= 3) {
+                const curr4hOpen = curr4hBars[0].o;
+                const curr4hClose = curr4hBars[curr4hBars.length - 1].c;
+                const curr4hMove = curr4hClose - curr4hOpen; // 正=涨 负=跌
+                const curr4hDir = curr4hMove > 0 ? "long" : "short";
+                const moveSize = Math.abs(curr4hMove);
+                
+                // 只拦截浅幅矛盾（移动 < 均波50%）
+                // 如果已超跌/超涨（移动 ≥ 均波50%），允许逆势入场（均值回归）
+                if (curr4hDir !== dir && moveSize < tpPt * 0.7) {
+                    pocLog.push(`  ${new Date(k.ts + 8 * 3600000).toISOString().slice(11, 16)} ❌ 拦截 ${dir.toUpperCase()}: 当前4H ${curr4hDir.toUpperCase()} ${moveSize.toFixed(0)}pt 与POC矛盾`);
+                    continue;
+                }
+            }
+        }
+
+        // 记录 POC 判断过程
+        const lastC = closedK4h[closedK4h.length - 1];
+        const prevC = closedK4h[closedK4h.length - 2];
+        const utc8Ts = (ts: number) => new Date(ts + 8 * 3600000).toISOString().slice(11, 16);
+        pocLog.push(`  ${utc8Ts(k.ts)} 入场 | 已关闭4H: ${utc8Ts(prevC.ts)}→${utc8Ts(lastC.ts)} POC=${calcPOC(prevC).toFixed(0)}→${calcPOC(lastC).toFixed(0)} 位移=${pocShift >= 0 ? "+" : ""}${pocShift.toFixed(1)}pt → ${dir.toUpperCase()} | 价格$${k.c.toFixed(0)} 4H[${ref4h.l.toFixed(0)}-${ref4h.h.toFixed(0)}] pos=${(pricePos*100).toFixed(0)}%`);
+
         // 模组五: 2% SL
         const slPt = Math.max(10, Math.min(bal * 0.02, 40));
         const qty = Math.min(Math.max(0.1, (bal * 0.10) / slPt), 5.0);
@@ -305,7 +340,7 @@ function runV200(kl5m: K[], k1h: K[], k4h: K[]): { trades: Trade[]; pnl: number 
         trades.push({ side: dir, entry: entryPrice, exit: exitP, pt, net, reason, time: entryTime, qty: Math.floor(qty * 10) / 10 });
     }
 
-    return { trades, pnl: trades.reduce((a, t) => a + t.net, 0) };
+    return { trades, pnl: trades.reduce((a, t) => a + t.net, 0), pocLog };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -390,13 +425,17 @@ async function main() {
     console.log("  🤖 V200 五模组 Bot");
     console.log("═══════════════════════════════════════════════════════════════════");
 
-    // POC 方向
-    if (k4h.length >= 2) {
-        const shift = calcPOC(k4h[k4h.length - 1]) - calcPOC(k4h[k4h.length - 2]);
-        console.log(`  POC 位移: ${shift >= 0 ? "+" : ""}${shift.toFixed(1)}pt → ${shift > 5 ? "📈 LONG" : shift < -5 ? "📉 SHORT" : "⏸️ 无方向"}`);
-    }
+    // POC 方向 — 不再显示错误的全局值
+    console.log(`  ⚠️ POC 改为逐 bar 实时计算 (修复未来窥视)`);
 
     const v200 = runV200(kl5m, k1h, k4h);
+
+    // 显示 POC 判断过程
+    if (v200.pocLog.length > 0) {
+        console.log(`\n  📐 逐笔 POC 判断:`);
+        for (const log of v200.pocLog) console.log(log);
+    }
+
     console.log(`\n  笔数: ${v200.trades.length} | 净利: $${v200.pnl >= 0 ? "+" : ""}${v200.pnl.toFixed(2)}`);
     if (v200.trades.length > 0) {
         console.log("  ────────────────────────────────────────────────────────────");

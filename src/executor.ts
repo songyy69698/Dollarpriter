@@ -1,18 +1,16 @@
 /**
- * ⚡ Bitunix 执行器 — V92 动态SL/TP + 保本跟踪 + 交易日志采集
+ * ⚡ Bitunix 执行器 — V200 五模组出场
  * ═══════════════════════════════════════════
- * MARKET 入场 + 动态SL(ATR) + TP(1:1.5RR) + 保本12+3 + 跟踪10
- * 📊 每笔交易自动记录到 data/trades.jsonl (MuleRun策略优化用)
+ * MARKET 入场 + 硬 SL(2%) + 均波TP(70%) + 3H时效律
+ * 📊 每笔交易自动记录到 data/trades.jsonl
  */
 
 import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import {
     BITUNIX_BASE, SYMBOL, ETH_SYMBOL, LEVERAGE,
-    INITIAL_SL_PT, BREAKEVEN_PT, BREAKEVEN_SL_OFFSET, TRAILING_PT,
-    TAKER_FEE, SYMBOL_PRECISION, TP_RR_RATIO,
-    MIN_HOLD_MS, HOLD_EXTEND_PT,
-    PARTIAL_TP_PT, FULL_TP_PT,
+    TAKER_FEE, SYMBOL_PRECISION,
+    MIN_HOLD_MS, SL_MIN_PT,
 } from "./config";
 
 function log(msg: string) {
@@ -63,14 +61,12 @@ export class BitunixExecutor {
     tradeLog: any[] = [];
     private entryCtx: EntryContext | null = null;  // 📊 入场上下文
 
-    // V104 动态风控状态
-    breakevenTriggered = false;
+    // V200 动态风控状态
     bestProfitPt = 0;
-    dynamicSlPt = INITIAL_SL_PT;   // 动态SL
-    dynamicTpPt = 0;               // 动态TP
+    dynamicSlPt = SL_MIN_PT;       // 动态SL (strategy 传入)
+    dynamicTpPt = 0;               // 动态TP (strategy 传入, 均波70%)
     private tpOrderId = "";         // TP挂单ID
     currentWindowName = "";         // 当前窗口名
-    partialClosed = false;          // V104: 已平50%?
 
     // 延迟诊断
     lastEntryMs = 0;
@@ -188,9 +184,9 @@ export class BitunixExecutor {
         qty: number,
         targetSymbol: string = SYMBOL,
         onDepthFail?: (msg: string) => Promise<void>,
-        slPt?: number,             // V92: 动态SL
-        tpPt?: number,             // V92: 动态TP
-        windowName?: string,       // V92: 窗口名 (延仓用)
+        slPt?: number,             // V200: 动态SL
+        tpPt?: number,             // V200: 动态TP
+        windowName?: string,       // V200: 窗口名
     ): Promise<boolean> {
         if (this.inPosition || this._entering) return false;
 
@@ -226,7 +222,7 @@ export class BitunixExecutor {
         await this.setupTradeEnv(targetSymbol);
 
         const tag = genOrderTag();
-        log(`🏁 [V90] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)}`);
+        log(`🏁 [V200] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)}`);
 
         const orderData: Record<string, string> = {
             symbol: targetSymbol,
@@ -275,12 +271,12 @@ export class BitunixExecutor {
         this.positionQty = actualQty;
         this.entryTs = Date.now();
         this.orderTag = tag;
-        this.breakevenTriggered = false;
+
         this.bestProfitPt = 0;
 
-        // V92: 存储动态SL/TP
-        this.dynamicSlPt = slPt || INITIAL_SL_PT;
-        this.dynamicTpPt = tpPt || (this.dynamicSlPt * TP_RR_RATIO);
+        // V200: 存储动态SL/TP (由 strategy 计算传入)
+        this.dynamicSlPt = slPt || SL_MIN_PT;
+        this.dynamicTpPt = tpPt || 30; // fallback 30pt
         this.currentWindowName = windowName || "";
 
         // Atomic SL — 动态SL STOP_MARKET
@@ -298,7 +294,7 @@ export class BitunixExecutor {
         if (slOk) log(`🛡️ SL: ${slPrice.toFixed(prec.price)} (-${this.dynamicSlPt.toFixed(1)}pt) [${this.lastSlMs}ms]`);
         else log("⚠️ SL 挂单失败!");
 
-        // V92: TP 挂单 — TAKE_PROFIT_MARKET
+        // V200: TP 挂单 — TAKE_PROFIT_MARKET
         if (this.dynamicTpPt > 0) {
             const tpPrice = side === "long"
                 ? actualPrice + this.dynamicTpPt
@@ -384,7 +380,7 @@ export class BitunixExecutor {
         return false;
     }
 
-    // ═══ V92 TAKE_PROFIT_MARKET ═══
+    // ═══ V200 TAKE_PROFIT_MARKET ═══
     private async placeTakeProfitMarket(
         symbol: string, closeSide: string, qty: number, triggerPrice: number,
         prec: { qty: number; price: number },
@@ -409,10 +405,11 @@ export class BitunixExecutor {
     }
 
     // ═══════════════════════════════════════════════
-    // V200 五模组出场: 硬SL → 均波TP → 3H时效律
+    // V300 订单流出场: 硬SL → Climax止盈 → 均波TP → 3H时效
     // ═══════════════════════════════════════════════
     async checkPosition(
         currentPrice: number,
+        snap?: any, // CausalSnapshot
     ): Promise<{ closed: boolean; reason: string; netPnlU: number; symbol: string }> {
         if (!this.inPosition) return { closed: false, reason: "", netPnlU: 0, symbol: "" };
 
@@ -439,7 +436,16 @@ export class BitunixExecutor {
             return { closed: false, reason: "", netPnlU: 0, symbol: "" };
         }
 
-        // ═══ Layer 2: V200 均波 TP — 达到 avgRange*70% 即平仓 ═══
+        // ═══ Layer 2: V300 Climax (顺势爆量) 自动止盈 ═══
+        if (!reason && snap && pnlPt > 10) { // 至少需有 10pt 浮盈才做 Climax 检测
+            const isClimax = (this.positionSide === "long" && snap.ethAbsorption && snap.ethAbsorptionSide === "sell") ||
+                             (this.positionSide === "short" && snap.ethAbsorption && snap.ethAbsorptionSide === "buy");
+            if (isClimax) {
+                reason = `🔥 Climax 爆量吸收: +${pnlPt.toFixed(prec.price)}pt (反向吸收出现)`;
+            }
+        }
+
+        // ═══ Layer 3: V300 均波 TP — 达到 avgRange*70% 即平仓 ═══
         if (!reason && pnlPt >= this.dynamicTpPt && this.dynamicTpPt > 0) {
             reason = `🎯 均波TP: +${pnlPt.toFixed(prec.price)}pt ≥ ${this.dynamicTpPt.toFixed(1)}pt`;
         }
@@ -620,7 +626,7 @@ export class BitunixExecutor {
         return closedCount;
     }
 
-    /** V104: 部分平仓 — 平指定数量 */
+    /** 部分平仓 — 平指定数量 */
     private async closePartialPosition(sym: string, qty: number): Promise<number> {
         const prec = getPrecision(sym);
         try {
@@ -760,15 +766,13 @@ export class BitunixExecutor {
         this.slOrderId = "";
         this.currentSlPrice = 0;
         this._entering = false;
-        this.breakevenTriggered = false;
-        this.bestProfitPt = 0;
-        this.highSlippage = false;
-        this.dynamicSlPt = INITIAL_SL_PT;
+        this.dynamicSlPt = SL_MIN_PT;
         this.dynamicTpPt = 0;
         this.tpOrderId = "";
         this.currentWindowName = "";
+        this.bestProfitPt = 0;
+        this.highSlippage = false;
         this.entryCtx = null;
-        this.partialClosed = false;  // V104: 重置分批状态
     }
 
     private logTrade(reason: string, pnlPt: number, netPnlU: number) {
@@ -791,7 +795,6 @@ export class BitunixExecutor {
             reason,
             holdMinutes: +(elapsed / 60_000).toFixed(1),
             bestProfitPt: this.bestProfitPt,
-            breakevenHit: this.breakevenTriggered,
             // ═══ 风控参数 ═══
             slPt: this.dynamicSlPt,
             tpPt: this.dynamicTpPt,

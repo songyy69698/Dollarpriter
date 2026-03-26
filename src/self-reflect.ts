@@ -31,7 +31,7 @@ interface TradeRecord {
     reason: string;
     holdMinutes: number;
     bestProfitPt: number;
-    breakevenHit: boolean;
+    breakevenHit: boolean;      // legacy: V104兼容，V200不再生成
     slPt: number;
     tpPt: number;
     qty: number;
@@ -72,9 +72,9 @@ interface PerformanceAnalysis {
     slAvgBestProfit: number;     // 被扫SL的单，平均最大浮盈
     slTooTight: boolean;         // SL 是否太紧
     // 保本效率
-    breakevenCount: number;      // 触发保本的笔数
-    breakevenProfitRate: number; // 保本后最终盈利的比例
-    breakevenAvgProfit: number;  // 保本后平均最终盈利
+    breakevenCount: number;      // legacy: V104保本触发次数
+    breakevenProfitRate: number; // legacy: V104保本后盈利比例
+    breakevenAvgProfit: number;  // legacy: V104保本后平均盈利
     // 滑点
     avgSlippage: number;
     maxSlippage: number;
@@ -301,7 +301,7 @@ export class SelfReflector {
         if (a.breakevenCount >= 5 && a.breakevenProfitRate < 0.50) {
             insights.push({
                 level: "💡",
-                message: `保本触发${a.breakevenCount}次，仅${(a.breakevenProfitRate * 100).toFixed(0)}%最终盈利 → 考虑延后保本PT`,
+                message: `[legacy] 保本触发${a.breakevenCount}次，仅${(a.breakevenProfitRate * 100).toFixed(0)}%最终盈利 (旧版数据)`,
             });
         }
 
@@ -395,7 +395,7 @@ export class SelfReflector {
         msg += `🛡️ *风控*\n`;
         msg += `  连亏: 当前${Math.abs(a.currentStreak)}笔 | 历史最大${a.maxLossStreak}笔\n`;
         msg += `  SL被扫: ${a.slTradeCount}笔 | 被扫前均浮盈+${a.slAvgBestProfit.toFixed(0)}pt\n`;
-        msg += `  保本: ${a.breakevenCount}次触发 | ${(a.breakevenProfitRate * 100).toFixed(0)}%最终盈利\n`;
+        msg += `  保本(legacy): ${a.breakevenCount}次触发 | ${(a.breakevenProfitRate * 100).toFixed(0)}%最终盈利\n`;
         msg += `  滑点: 均${a.avgSlippage.toFixed(1)}pt | 最大${a.maxSlippage.toFixed(1)}pt\n`;
 
         // 持仓
@@ -473,7 +473,7 @@ if (import.meta.main) {
     console.log(`当前连续: ${analysis.currentStreak > 0 ? "连赢" : "连亏"}${Math.abs(analysis.currentStreak)}笔 (${analysis.streakPnl >= 0 ? "+" : ""}${analysis.streakPnl.toFixed(1)}U)`);
     console.log(`历史最大连亏: ${analysis.maxLossStreak}笔`);
     console.log(`SL被扫: ${analysis.slTradeCount}笔 | 被扫前均浮盈+${analysis.slAvgBestProfit.toFixed(1)}pt`);
-    console.log(`保本触发: ${analysis.breakevenCount}次 | ${(analysis.breakevenProfitRate * 100).toFixed(0)}%最终盈利`);
+    console.log(`保本(legacy): ${analysis.breakevenCount}次 | ${(analysis.breakevenProfitRate * 100).toFixed(0)}%最终盈利`);
     console.log(`滑点: 均${analysis.avgSlippage.toFixed(1)}pt | 最大${analysis.maxSlippage.toFixed(1)}pt`);
 
     console.log("\n═══ 持仓时间 ═══");

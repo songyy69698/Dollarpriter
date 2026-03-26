@@ -1,8 +1,8 @@
 /**
- * 🤖 Dollarprinter V200 五模组 Bot
+ * 🤖 Dollarprinter V300 订单流 AI Bot
  * ═════════════════════════════════════════════
- * 回测: $500→$925 (+185%) | 26笔 77%胜 PF5.71
- * 时间过滤 + SVP感知 + 进场触发 + 执行效能 + 凯利风控
+ * Order Flow 驱动: Absorption + CVD背离 + FVG + Sweep
+ * 战场标记 + 陷阱反转 + 真突破 | 150x
  */
 
 import { BitunixWSEngine } from "./bitunix-ws";
@@ -11,19 +11,15 @@ import type { Mom12Signal } from "./strategy";
 import { BitunixExecutor } from "./executor";
 import type { EntryContext } from "./executor";
 import { MtfPocEngine } from "./mtf-poc";
+import { BattlefieldMarker } from "./battlefield";
 import { notifyTG, pollTGCommands, initTG } from "./telegram";
 import { SelfReflector } from "./self-reflect";
 import { AgentCouncil } from "./agent-council";
 import {
-    LEVERAGE, MARGIN_PER_TRADE, FIXED_QTY,
-    INITIAL_SL_PT, BREAKEVEN_PT, TRAILING_PT,
-    MAX_DAILY_TRADES, MAX_DAILY_LOSS,
-    ETH_SYMBOL, SYMBOL_PRECISION,
-    MOM12_THRESHOLD, VOL_MULTIPLIER, BINANCE_BASE,
-    SL_MIN_PT, SL_MAX_PT, TP_RR_RATIO,
-    HOLD_EXTEND_PT,
+    LEVERAGE, MAX_DAILY_TRADES, MAX_DAILY_LOSS,
+    ETH_SYMBOL, SYMBOL_PRECISION, BINANCE_BASE,
+    SL_MIN_PT, SL_MAX_PT,
     COUNCIL_AUTO_DAILY, COUNCIL_AUTO_UTC_HOUR, COUNCIL_DAYS,
-    MTF_MIN_SCORE,
 } from "./config";
 
 function log(msg: string) {
@@ -38,6 +34,7 @@ class DollarprinterBot {
     private strategy: Mom12Strategy;
     private executor: BitunixExecutor;
     private mtf: MtfPocEngine;
+    private battlefield: BattlefieldMarker;
 
     private paused = true;
     private startTime = Date.now();
@@ -57,6 +54,7 @@ class DollarprinterBot {
         this.strategy = new Mom12Strategy();
         this.executor = new BitunixExecutor(apiKey, secretKey);
         this.mtf = new MtfPocEngine();
+        this.battlefield = new BattlefieldMarker();
     }
 
     async start() {
@@ -64,9 +62,9 @@ class DollarprinterBot {
         await initTG();
 
         log("════════════════════════════════════════════");
-        log("  🤖 V200 五模组 Bot");
-        log(`  📊 POC位移+进场触发+凯利风控`);
-        log(`  🛡️ SL=2%止损 | TP=均波70% | 3H时效律 | ${LEVERAGE}x`);
+        log("  🤖 V300 订单流 AI Bot");
+        log(`  📊 Absorption+CVD背离+FVG+Sweep`);
+        log(`  🛡️ 战场标记+陷阱反转+真突破 | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
 
         this.ws.start();
@@ -75,14 +73,14 @@ class DollarprinterBot {
         const bal = await this.executor.getBalance();
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
-        // V200: 五模组策略引擎
-        log(`  📊 V200 五模组引擎就绪`);
+        // V300: 订单流 AI 引擎
+        log(`  📊 V300 订单流引擎就绪`);
 
         await notifyTG(
-            `🤖 *V200 五模组 Bot*\n` +
+            `🤖 *V300 订单流 AI Bot*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
-            `📊 POC位移+进场触发+凯利风控\n` +
-            `🛡️ SL=2%止损 | TP=均波70% | 3H时效律\n` +
+            `📊 Absorption+CVD背离+FVG+Sweep\n` +
+            `🎯 战场标记+陷阱反转+真突破\n` +
             `🧊 走三退一 | 亚盘12:00强平\n` +
             `发 *1* 激活 | *r* 反思`,
         );
@@ -101,11 +99,12 @@ class DollarprinterBot {
         this.strategyLoop();
         this.positionLoop();
         this.tgCommandLoop();
+        this.battlefieldLoop();  // V300: 战场标记循环
         setInterval(() => this.hourlyReport(), 3600_000);
         setInterval(() => this.dailyReset(), 60_000);
         setInterval(() => this.dailyAutoReflect(), 60_000);
 
-        log("🟢 V200 五模组就绪 — 发 1 激活");
+        log("🟢 V300 订单流 AI 就绪 — 发 1 激活");
     }
 
     private async waitForWS() {
@@ -176,24 +175,39 @@ class DollarprinterBot {
 
             this.signalNotified = false;
             const bal = await this.executor.getBalance();
-            // V104挑战版: 传递大单 Delta 给策略
+            const range = this.battlefield.getActiveRange();
+            // V300: 传递 OF 快照和锚定数据给策略
             this.strategy.evaluate(
-                snap.ethPOCSlope,
+                snap,
+                range,
                 bal,
-                snap.ethBigNetDelta,
-                snap.ethBigCVD,
-                snap.ethBigRatio,
             );
 
-        }, 10_000); // 每10秒检查 (K线5分钟更新一次)
+        }, 10_000); // 每10秒检查
+    }
+
+    /** V300: 战场标记循环 (30s) */
+    private battlefieldLoop() {
+        setInterval(async () => {
+            const mark = await this.battlefield.tick();
+            if (mark) {
+                await notifyTG(
+                    `🎯 *战场标记* ${mark.name}\n` +
+                    `H=${mark.high.toFixed(1)} L=${mark.low.toFixed(1)}\n` +
+                    `VAH=${mark.vah.toFixed(1)} VAL=${mark.val.toFixed(1)}\n` +
+                    `POC=${mark.poc.toFixed(1)}`,
+                );
+            }
+        }, 30_000);
     }
 
     private async sendSignalNotification(sig: Mom12Signal) {
         const msg =
-            `🤖 *V200 五模组*\n` +
+            `🤖 *V300 订单流*\n` +
             `──────────\n` +
             `方向: *${sig.side.toUpperCase()}* ${sig.side === "long" ? "📈做多" : "📉做空"}\n` +
             `价格: $${sig.price.toFixed(2)}\n` +
+            `触发: ${sig.triggerMode === "trap" ? "🪤陷阱反转" : "🚀FVG突破"}\n` +
             `窗口: ${sig.windowName}\n` +
             `──────────\n` +
             `SL: ${sig.slPt.toFixed(1)}pt | TP: ${sig.tpPt.toFixed(1)}pt\n` +
@@ -239,7 +253,7 @@ class DollarprinterBot {
             await Bun.sleep(500);
             await this.executor.syncPositions();
 
-            // ═══ V104: 窗口收盘定时平仓 ═══
+            // ═══ V200: 窗口收盘定时平仓 ═══
             const pending = this.strategy.pendingSignal;
             if (pending?.windowEndTs) {
                 const msToClose = pending.windowEndTs - Date.now();
@@ -297,7 +311,7 @@ class DollarprinterBot {
                 return;
             }
 
-            const r = await this.executor.checkPosition(s.ethPrice);
+            const r = await this.executor.checkPosition(s.ethPrice, s);
             if (r.closed) {
                 this.dailyTrades++; this.dailyPnl += r.netPnlU;
                 this.totalTrades++; this.totalPnl += r.netPnlU;
@@ -420,7 +434,7 @@ class DollarprinterBot {
                 ? s.ethPrice - this.executor.entryPrice : this.executor.entryPrice - s.ethPrice;
             m += `──────────\n`;
             m += `🔥 ETH ${this.executor.positionSide.toUpperCase()} @ $${this.executor.entryPrice.toFixed(prec.price)}\n`;
-            m += `浮盈:${pnl >= 0 ? "+" : ""}${pnl.toFixed(prec.price)}pt | 保本:${this.executor.breakevenTriggered ? "✅" : "❌"}\n`;
+            m += `浮盈:${pnl >= 0 ? "+" : ""}${pnl.toFixed(prec.price)}pt | SL:${this.executor.dynamicSlPt.toFixed(0)}pt TP:${this.executor.dynamicTpPt.toFixed(0)}pt\n`;
             m += `最优:+${this.executor.bestProfitPt.toFixed(1)}pt\n`;
         }
         await notifyTG(m);

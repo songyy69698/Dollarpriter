@@ -164,3 +164,60 @@ export const MAX_CHASE_PT = 15;                 // 超过POC 15pt = 不追
 export const COUNCIL_AUTO_DAILY = true;         // 每日自动运行Council
 export const COUNCIL_AUTO_UTC_HOUR = 7;         // UTC 07:50 自动触发 (交易日前)
 export const COUNCIL_DAYS = 14;                 // 默认分析天数
+
+// ═══════════════════════════════════════
+// 🎯 V300 战场标记锚定窗口 (UTC+8)
+// ═══════════════════════════════════════
+export interface AnchorConfig {
+    name: string;
+    startH: number;   // UTC+8
+    startM: number;
+    endH: number;     // UTC+8
+    endM: number;
+}
+export const ANCHOR_WINDOWS: AnchorConfig[] = [
+    { name: "AM锚定",     startH: 9,  startM: 30, endH: 9,  endM: 45 },  // 亚盘
+    { name: "PM锚定",     startH: 21, startM: 30, endH: 21, endM: 45 },  // 纽约盘
+    { name: "黄金单边",   startH: 15, startM: 15, endH: 15, endM: 30 },  // 单边强势期
+    { name: "假突破反转", startH: 22, startM: 30, endH: 22, endM: 45 },  // 假突破反转期
+];
+
+// ═══════════════════════════════════════
+// 🔬 V300 订单流检测阈值
+// ═══════════════════════════════════════
+export const VA_PERCENTAGE = 0.70;            // Value Area 70%
+export const ABSORPTION_VOL_MIN = 5;          // 吸收单: ≥5 ETH 主动单
+export const ABSORPTION_PRICE_MAX = 0.5;      // 吸收单: 价格位移 <0.5pt
+export const ABSORPTION_WINDOW_MS = 5_000;    // 吸收检测窗口 5s
+export const SWEEP_LAYER_MIN = 3;             // 掃单: 连吃 ≥3 层掛单
+export const SWEEP_SPEED_MS = 2_000;          // 掃单: 2s 内
+export const CVD_DIVERGE_THRESHOLD = 10;      // CVD 背离阈值 ≥10 ETH
+export const FAKE_WALL_CANCEL_RATIO = 0.5;    // 假墙: ≥50% 被撤 = 假
+
+// ═══════════════════════════════════════
+// 🎯 V300 止盈参数
+// ═══════════════════════════════════════
+export const TP_MIN_PT = 30;                  // 固定 TP 下限 30pt
+export const TP_MAX_PT = 50;                  // 固定 TP 上限 50pt
+export const TP_AVG_RANGE_MULT = 0.70;        // H4 均波 TP = 均波 × 70%
+export const CLIMAX_VOL_MULT = 3.0;           // Climax: ≥ 均量 3x
+
+// ═══════════════════════════════════════
+// 🧱 V300 FVG 参数
+// ═══════════════════════════════════════
+export const FVG_MIN_GAP_PT = 2.0;            // FVG 最小缺口 2pt
+export const FVG_LOOKBACK_BARS = 10;          // FVG 回看 10 根 M1
+export const ENGULF_BODY_RATIO = 0.6;         // 吞噬 K 线实体 ≥ 60%
+
+// ═══════════════════════════════════════
+// 🏗️ V300 DOM 深度参数
+// ═══════════════════════════════════════
+export const DOM_LEVELS = 10;                 // 监控 10 档深度
+
+// ═══════════════════════════════════════
+// 🧠 V200/V300 凯利与风控参数补全
+// ═══════════════════════════════════════
+export const POC_SHIFT_THRESHOLD = 5;         // POC 位移判定阈值
+export const KELLY_MIN_TRADES = 10;           // 凯利公式最小样本数
+export const KELLY_MAX_FRACTION = 0.20;       // 凯利公式最大仓位比例 (20%)
+export const CONSECUTIVE_WIN_LIMIT = 3;       // 走三退一限界

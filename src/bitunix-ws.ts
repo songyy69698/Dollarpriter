@@ -1,13 +1,16 @@
 /**
- * 🔌 Bitunix WebSocket 数据引擎 — V75 能量 vs 阻力
+ * 🔌 Bitunix WebSocket 数据引擎 — V300 订单流 AI
  * ═══════════════════════════════════════════════════════
  * 三币种订阅: SOLUSDT + ETHUSDT + BTCUSDT
- * V75: L1 首档牆量 + 瞬时成交量 + 牆体变化率
+ * VP/POC + CVD + VA + 吸收/掃单/假墙 + DOM10
  */
 
 import {
     BITUNIX_WS_PUBLIC, SYMBOL, ETH_SYMBOL, BTC_SYMBOL,
     EFFICIENCY_WINDOW, AVG_VOL_WINDOW,
+    VA_PERCENTAGE, ABSORPTION_VOL_MIN, ABSORPTION_PRICE_MAX,
+    ABSORPTION_WINDOW_MS, SWEEP_LAYER_MIN, SWEEP_SPEED_MS,
+    FAKE_WALL_CANCEL_RATIO, DOM_LEVELS, CVD_DIVERGE_THRESHOLD,
 } from "./config";
 
 function log(msg: string) {
@@ -65,7 +68,7 @@ export interface CausalSnapshot {
     recentDeltaDirs: number[];
     ethRecentDeltaDirs: number[];
 
-    // ── V75 能量 vs 阻力 ──
+    // ── 能量 vs 阻力 ──
     ethL1AskVol: number;
     ethL1BidVol: number;
     ethInstantVol: number;
@@ -73,7 +76,7 @@ export interface CausalSnapshot {
     ethLastPrice: number;
     ethAvgVol: number;
 
-    // ── V92 POC Volume Profile ──
+    // ── V200 POC Volume Profile ──
     ethPOC: number;              // 当前4h POC价格
     ethPrevPOC: number;          // 前4h POC价格
     ethPOCSlope: number;         // POC位移 (current - previous)
@@ -87,6 +90,20 @@ export interface CausalSnapshot {
     ethBigCVD: number;           // 累积大单 Delta (5min窗口)
     ethBigRatio: number;         // 大单占总成交比例 (0-1)
     ethBigOrderCount: number;    // 5min 内大单笔数
+
+    // ── V300 订单流检测 ──
+    ethCVD: number;              // 全量累积成交量差
+    ethCVDSlope: number;         // CVD 10s 斜率
+    ethVAH: number;              // Value Area High
+    ethVAL: number;              // Value Area Low
+    ethAbsorption: boolean;      // 吸收单检测
+    ethAbsorptionSide: "buy" | "sell" | "";  // 吸收方向
+    ethSweep: boolean;           // 掃单检测
+    ethSweepSide: "buy" | "sell" | "";      // 掃单方向
+    ethFakeWall: boolean;        // 假墙标记
+    ethFakeWallSide: "ask" | "bid" | "";    // 假墙方向
+    ethDOM10AskVol: number;      // 10档卖方密集度
+    ethDOM10BidVol: number;      // 10档买方密集度
 
     // ── 延迟诊断 ──
     wsLatencyMs: number;
@@ -111,11 +128,11 @@ class SymbolTracker {
     bidWallVol = 0;
     top3Depth = 0;
 
-    // V75: L1 首档牆量
+    // L1 首档牆量
     l1AskVol = 0;
     l1BidVol = 0;
 
-    // V75: 牆体变化率追踪
+    // 牆体变化率追踪
     bidWallHistory: { ts: number; vol: number }[] = [];
     readonly WALL_HISTORY_MS = 5_000;
 
@@ -139,7 +156,7 @@ class SymbolTracker {
     private totalVolInWindow = 0;   // 5min 窗口内总成交量
     private bigVolInWindow = 0;     // 5min 窗口内大单成交量
 
-    // ═══ V92 Volume Profile POC ═══
+    // ═══ V200 Volume Profile POC ═══
     // 真实成交数据 bin=1.0pt, 滚动4h窗口
     private readonly VP_BIN_SIZE = 1.0;           // 价格分桶 1.0pt
     private readonly VP_WINDOW_MS = 4 * 3600_000; // 4小时滚动窗口
@@ -149,6 +166,40 @@ class SymbolTracker {
     private vpPrevPOC = 0;       // 前4h POC (每4h更新一次)
     private vpLastRotateTs = 0;  // 上次轮换 prevPOC 的时间
     private vpLastCleanTs = 0;   // 上次清理的时间
+
+    // ═══ V300 全量 CVD 引擎 ═══
+    private cvdTotal = 0;           // 全量累积成交量差 (买-卖)
+    private cvdRing: { ts: number; val: number }[] = [];  // CVD 快照历史
+    private readonly CVD_SNAPSHOT_MS = 10_000;  // 每 10s 存一个 CVD 快照
+    private cvdLastSnapshotTs = 0;
+    private cvdPriceHigh = 0;       // CVD 窗口内价格最高
+    private cvdPriceLow = Infinity; // CVD 窗口内价格最低
+    private cvdAtPriceHigh = 0;     // 价格创高时的 CVD
+    private cvdAtPriceLow = 0;      // 价格创低时的 CVD
+
+    // ═══ V300 吸收单检测 ═══
+    private absorbRing: { ts: number; vol: number; priceStart: number; priceEnd: number; isBuy: boolean }[] = [];
+    private absorbDetected = false;
+    private absorbSide: "buy" | "sell" | "" = "";
+
+    // ═══ V300 掃单检测 ═══
+    private sweepDetected = false;
+    private sweepSide: "buy" | "sell" | "" = "";
+    private sweepRing: { ts: number; layers: number; side: "buy" | "sell" }[] = [];
+    private lastDepthAskPrices: number[] = [];
+    private lastDepthBidPrices: number[] = [];
+
+    // ═══ V300 假墙追踪 ═══
+    private fakeWallDetected = false;
+    private fakeWallSide: "ask" | "bid" | "" = "";
+    private prevAskWallVol = 0;
+    private prevBidWallVol = 0;
+    private prevAskTrades = 0;  // 上一周期卖方成交量
+    private prevBidTrades = 0;  // 上一周期买方成交量
+
+    // ═══ V300 DOM 10 档 ═══
+    dom10AskVol = 0;
+    dom10BidVol = 0;
 
     constructor(symbol: string) {
         this.symbol = symbol;
@@ -193,7 +244,7 @@ class SymbolTracker {
         return this.deltaDirRing.slice(-this.DELTA_DIR_MAX);
     }
 
-    /** V75: 瞬时成交量 (最近 windowMs 毫秒的总成交量) */
+    /** 瞬时成交量 (最近 windowMs 毫秒的总成交量) */
     getInstantVol(windowMs = 2000): number {
         const now = Date.now();
         let total = 0;
@@ -204,7 +255,7 @@ class SymbolTracker {
         return total;
     }
 
-    /** V75: 买盘牆变化率 (vs 5s 前，-0.6 = 下降 60%) */
+    /** 买盘牆变化率 (vs 5s 前，-0.6 = 下降 60%) */
     getBidWallChange(): number {
         if (this.bidWallHistory.length < 2) return 0;
         const now = Date.now();
@@ -316,20 +367,79 @@ class SymbolTracker {
             // 每 200 笔交易清理一次大单窗口
             if (this.deltaRing.length % 200 === 0) this.cleanBigOrders();
 
-            // ═══ V92 Volume Profile: 每笔成交加入分桶 ═══
+            // ═══ V200 Volume Profile: 每笔成交加入分桶 ═══
             const binPrice = Math.round(tradePrice / this.VP_BIN_SIZE) * this.VP_BIN_SIZE;
             this.vpTradeBuffer.push({ ts: now, binPrice, vol: qty });
             this.vpVolumeMap.set(binPrice, (this.vpVolumeMap.get(binPrice) || 0) + qty);
+
+            // ═══ V300 CVD 累积 ═══
+            this.cvdTotal += isBuyer ? qty : -qty;
+
+            // CVD 快照 (每 10s 存一次，用于斜率计算)
+            if (now - this.cvdLastSnapshotTs >= this.CVD_SNAPSHOT_MS) {
+                this.cvdRing.push({ ts: now, val: this.cvdTotal });
+                if (this.cvdRing.length > 30) this.cvdRing.shift(); // 保留 5min
+                this.cvdLastSnapshotTs = now;
+            }
+
+            // CVD 价格-CVD 背离追踪 (5min 窗口)
+            if (tradePrice > this.cvdPriceHigh) {
+                this.cvdPriceHigh = tradePrice;
+                this.cvdAtPriceHigh = this.cvdTotal;
+            }
+            if (tradePrice < this.cvdPriceLow) {
+                this.cvdPriceLow = tradePrice;
+                this.cvdAtPriceLow = this.cvdTotal;
+            }
+
+            // ═══ V300 吸收单检测 ═══
+            // 大量主动单 (≥ABSORPTION_VOL_MIN ETH) 但价格几乎不动
+            this.absorbRing.push({
+                ts: now, vol: qty,
+                priceStart: this.lastPrice > 0 ? this.lastPrice : tradePrice,
+                priceEnd: tradePrice,
+                isBuy: isBuyer,
+            });
+            // 清理窗口外数据
+            while (this.absorbRing.length > 0 && now - this.absorbRing[0].ts > ABSORPTION_WINDOW_MS) {
+                this.absorbRing.shift();
+            }
+            // 检测: 窗口内总量 ≥ 阈值 且 价格位移小
+            if (this.absorbRing.length >= 3) {
+                const windowVol = this.absorbRing.reduce((s, r) => s + r.vol, 0);
+                const buyVol = this.absorbRing.filter(r => r.isBuy).reduce((s, r) => s + r.vol, 0);
+                const sellVol = windowVol - buyVol;
+                const priceRange = this.absorbRing.length > 0
+                    ? Math.abs(this.absorbRing[this.absorbRing.length - 1].priceEnd - this.absorbRing[0].priceStart)
+                    : 0;
+
+                if (windowVol >= ABSORPTION_VOL_MIN && priceRange <= ABSORPTION_PRICE_MAX) {
+                    this.absorbDetected = true;
+                    this.absorbSide = buyVol > sellVol ? "buy" : "sell";
+                } else {
+                    this.absorbDetected = false;
+                    this.absorbSide = "";
+                }
+            }
         }
 
         // 每60秒清理超过4h的旧成交 + 重算POC
-        if (now - this.vpLastCleanTs > 60_000) {
-            this.vpCleanAndRecalc(now);
-            this.vpLastCleanTs = now;
+        const now2 = Date.now();
+        if (now2 - this.vpLastCleanTs > 60_000) {
+            this.vpCleanAndRecalc(now2);
+            this.vpLastCleanTs = now2;
+        }
+
+        // 每 5min 重置 CVD 价格高低追踪
+        if (now2 - (this.cvdRing[0]?.ts ?? now2) > 300_000 && this.cvdRing.length > 0) {
+            this.cvdPriceHigh = this.price;
+            this.cvdPriceLow = this.price;
+            this.cvdAtPriceHigh = this.cvdTotal;
+            this.cvdAtPriceLow = this.cvdTotal;
         }
     }
 
-    // ═══ V92 Volume Profile 清理+重算 ═══
+    // ═══ V200 Volume Profile 清理+重算 ═══
     private vpCleanAndRecalc(now: number) {
         const cutoff = now - this.VP_WINDOW_MS;
 
@@ -369,7 +479,7 @@ class SymbolTracker {
         }
     }
 
-    /** V92 POC 数据 */
+    /** V200 POC 数据 */
     getPOCData(): { poc: number; prevPOC: number; slope: number; dir: "long" | "short" | ""; nodeCount: number } {
         const slope = this.vpPOC - this.vpPrevPOC;
         const dir = slope > 5 ? "long" as const : slope < -5 ? "short" as const : "" as const;
@@ -380,6 +490,88 @@ class SymbolTracker {
             dir,
             nodeCount: this.vpVolumeMap.size,
         };
+    }
+
+    // ═══ V300 Value Area (70%) 计算 ═══
+    getValueArea(): { vah: number; val: number; poc: number } {
+        if (this.vpVolumeMap.size === 0) return { vah: 0, val: 0, poc: this.vpPOC };
+
+        // 总成交量
+        let totalVol = 0;
+        for (const vol of this.vpVolumeMap.values()) totalVol += vol;
+
+        // 按价格排序的分桶
+        const sorted = Array.from(this.vpVolumeMap.entries()).sort((a, b) => a[0] - b[0]);
+        const targetVol = totalVol * VA_PERCENTAGE;
+
+        // 从 POC 向两侧扩展直到累积 70%
+        const pocIdx = sorted.findIndex(([p]) => p === this.vpPOC);
+        if (pocIdx === -1) return { vah: sorted[sorted.length - 1][0], val: sorted[0][0], poc: this.vpPOC };
+
+        let accVol = sorted[pocIdx][1]; // POC 本身的量
+        let lo = pocIdx, hi = pocIdx;
+
+        while (accVol < targetVol && (lo > 0 || hi < sorted.length - 1)) {
+            const loVol = lo > 0 ? sorted[lo - 1][1] : 0;
+            const hiVol = hi < sorted.length - 1 ? sorted[hi + 1][1] : 0;
+
+            if (loVol >= hiVol && lo > 0) {
+                lo--;
+                accVol += sorted[lo][1];
+            } else if (hi < sorted.length - 1) {
+                hi++;
+                accVol += sorted[hi][1];
+            } else if (lo > 0) {
+                lo--;
+                accVol += sorted[lo][1];
+            } else {
+                break;
+            }
+        }
+
+        return { vah: sorted[hi][0], val: sorted[lo][0], poc: this.vpPOC };
+    }
+
+    // ═══ V300 CVD 数据 ═══
+    getCVDData(): { cvd: number; slope: number; divergeHigh: boolean; divergeLow: boolean } {
+        let slope = 0;
+        if (this.cvdRing.length >= 2) {
+            const last = this.cvdRing[this.cvdRing.length - 1];
+            const prev = this.cvdRing[this.cvdRing.length - 2];
+            slope = last.val - prev.val;
+        }
+
+        // 背离检测: 价格创高但 CVD 未创高
+        const divergeHigh = this.cvdPriceHigh > 0 &&
+            this.price >= this.cvdPriceHigh &&
+            this.cvdTotal < this.cvdAtPriceHigh - CVD_DIVERGE_THRESHOLD;
+
+        // 背离检测: 价格创低但 CVD 未创低
+        const divergeLow = this.cvdPriceLow < Infinity &&
+            this.price <= this.cvdPriceLow &&
+            this.cvdTotal > this.cvdAtPriceLow + CVD_DIVERGE_THRESHOLD;
+
+        return { cvd: this.cvdTotal, slope, divergeHigh, divergeLow };
+    }
+
+    // ═══ V300 吸收单检测结果 ═══
+    getAbsorption(): { detected: boolean; side: "buy" | "sell" | "" } {
+        return { detected: this.absorbDetected, side: this.absorbSide };
+    }
+
+    // ═══ V300 掃单检测结果 ═══
+    getSweep(): { detected: boolean; side: "buy" | "sell" | "" } {
+        // 清理过期
+        const now = Date.now();
+        while (this.sweepRing.length > 0 && now - this.sweepRing[0].ts > 30_000) {
+            this.sweepRing.shift();
+        }
+        return { detected: this.sweepDetected, side: this.sweepSide };
+    }
+
+    // ═══ V300 假墙检测结果 ═══
+    getFakeWall(): { detected: boolean; side: "ask" | "bid" | "" } {
+        return { detected: this.fakeWallDetected, side: this.fakeWallSide };
     }
 
     handleDepth(depthData: any) {
@@ -394,28 +586,47 @@ class SymbolTracker {
             log(`⚠️ [${this.symbol}] Depth asks/bids 为空! keys=${JSON.stringify(Object.keys(depthData || {}))} raw=${JSON.stringify(depthData).slice(0, 300)}`);
         }
 
+        // ═══ V300: 保存旧墙量 (假墙检测用) ═══
+        this.prevAskWallVol = this.askWallVol;
+        this.prevBidWallVol = this.bidWallVol;
+
+        // ═══ V300: 记录旧深度价格层 (掃单检测用) ═══
+        const oldAskPrices = [...this.lastDepthAskPrices];
+        const oldBidPrices = [...this.lastDepthBidPrices];
+
         let askVol = 0;
         let top3 = 0;
-        for (let i = 0; i < Math.min(5, asks.length); i++) {
+        let dom10Ask = 0;
+        const newAskPrices: number[] = [];
+        const maxLevels = Math.max(DOM_LEVELS, 5);
+        for (let i = 0; i < Math.min(maxLevels, asks.length); i++) {
             const entry = asks[i];
             const vol = +(Array.isArray(entry) ? entry[1] : entry?.sz || entry?.qty || entry?.v || 0);
             const price = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
-            if (i === 0) { this.bestAsk = price; this.l1AskVol = vol; }  // V75: L1
-            askVol += vol;
+            if (i === 0) { this.bestAsk = price; this.l1AskVol = vol; }  // L1
+            if (i < 5) askVol += vol;
             if (i < 3) top3 += vol;
+            if (i < DOM_LEVELS) { dom10Ask += vol; newAskPrices.push(price); }
         }
         this.askWallVol = askVol;
         this.top3Depth = top3;
+        this.dom10AskVol = dom10Ask;
+        this.lastDepthAskPrices = newAskPrices;
 
         let bidVol = 0;
-        for (let i = 0; i < Math.min(5, bids.length); i++) {
+        let dom10Bid = 0;
+        const newBidPrices: number[] = [];
+        for (let i = 0; i < Math.min(maxLevels, bids.length); i++) {
             const entry = bids[i];
             const vol = +(Array.isArray(entry) ? entry[1] : entry?.sz || entry?.qty || entry?.v || 0);
             const price = +(Array.isArray(entry) ? entry[0] : entry?.price || entry?.p || 0);
-            if (i === 0) { this.bestBid = price; this.l1BidVol = vol; }  // V75: L1
-            bidVol += vol;
+            if (i === 0) { this.bestBid = price; this.l1BidVol = vol; }  // L1
+            if (i < 5) bidVol += vol;
+            if (i < DOM_LEVELS) { dom10Bid += vol; newBidPrices.push(price); }
         }
         this.bidWallVol = bidVol;
+        this.dom10BidVol = dom10Bid;
+        this.lastDepthBidPrices = newBidPrices;
 
         // 🔥 修复: 用 bestAsk/bestBid 中点作为备用价格 (解决只收到depth没有trade时price=$0)
         if (this.bestAsk > 0 && this.bestBid > 0) {
@@ -426,12 +637,67 @@ class SymbolTracker {
             }
         }
 
-        // V75: 记录牆体历史 (用于变化率计算)
+        // 记录牆体历史 (用于变化率计算)
         const now = Date.now();
         this.bidWallHistory.push({ ts: now, vol: bidVol });
         // 清理超过 10s 的旧记录
         while (this.bidWallHistory.length > 0 && now - this.bidWallHistory[0].ts > this.WALL_HISTORY_MS * 2) {
             this.bidWallHistory.shift();
+        }
+
+        // ═══ V300 掃单检测: 多层掛单被瞬间吃掉 ═══
+        this.sweepDetected = false;
+        this.sweepSide = "";
+        if (oldAskPrices.length >= SWEEP_LAYER_MIN) {
+            // 检查卖方掛单层级消失 (买方掃单向上吃)
+            let layersGone = 0;
+            for (const p of oldAskPrices) {
+                if (!newAskPrices.includes(p)) layersGone++;
+            }
+            if (layersGone >= SWEEP_LAYER_MIN) {
+                this.sweepDetected = true;
+                this.sweepSide = "buy";
+                this.sweepRing.push({ ts: now, layers: layersGone, side: "buy" });
+            }
+        }
+        if (!this.sweepDetected && oldBidPrices.length >= SWEEP_LAYER_MIN) {
+            // 检查买方掛单层级消失 (卖方掃单向下吃)
+            let layersGone = 0;
+            for (const p of oldBidPrices) {
+                if (!newBidPrices.includes(p)) layersGone++;
+            }
+            if (layersGone >= SWEEP_LAYER_MIN) {
+                this.sweepDetected = true;
+                this.sweepSide = "sell";
+                this.sweepRing.push({ ts: now, layers: layersGone, side: "sell" });
+            }
+        }
+
+        // ═══ V300 假墙判断: 墙量大幅下降但对应成交量很少 = 被撤不是被吃 ═══
+        this.fakeWallDetected = false;
+        this.fakeWallSide = "";
+        // 卖方假墙: askWall 大幅缩水但卖方成交量很少
+        if (this.prevAskWallVol > 0) {
+            const askDrop = (this.prevAskWallVol - this.askWallVol) / this.prevAskWallVol;
+            if (askDrop >= FAKE_WALL_CANCEL_RATIO) {
+                // 检查同期的买方成交量 — 如果很少说明不是被吃掉而是被撤
+                const recentDelta = this.getDelta();
+                if (recentDelta.buyDelta < this.prevAskWallVol * 0.3) {
+                    this.fakeWallDetected = true;
+                    this.fakeWallSide = "ask";
+                }
+            }
+        }
+        // 买方假墙: bidWall 大幅缩水但买方成交量很少
+        if (!this.fakeWallDetected && this.prevBidWallVol > 0) {
+            const bidDrop = (this.prevBidWallVol - this.bidWallVol) / this.prevBidWallVol;
+            if (bidDrop >= FAKE_WALL_CANCEL_RATIO) {
+                const recentDelta = this.getDelta();
+                if (recentDelta.sellDelta < this.prevBidWallVol * 0.3) {
+                    this.fakeWallDetected = true;
+                    this.fakeWallSide = "bid";
+                }
+            }
         }
     }
 }
@@ -494,7 +760,7 @@ export class BitunixWSEngine {
 
             for (const { sym, tracker } of symbols) {
                 try {
-                    const res = await fetch(`${BASE}/api/v1/futures/market/depth?symbol=${sym}&limit=5`);
+                    const res = await fetch(`${BASE}/api/v1/futures/market/depth?symbol=${sym}&limit=20`);
                     const json = (await res.json()) as any;
                     if (String(json?.code) !== "0") continue;
 
@@ -592,7 +858,7 @@ export class BitunixWSEngine {
             recentDeltaDirs: this.sol.getRecentDeltaDirs(),
             ethRecentDeltaDirs: this.eth.getRecentDeltaDirs(),
 
-            // V75 能量 vs 阻力
+            // 能量 vs 阻力
             ethL1AskVol: this.eth.l1AskVol,
             ethL1BidVol: this.eth.l1BidVol,
             ethInstantVol: this.eth.getInstantVol(2000),
@@ -600,7 +866,7 @@ export class BitunixWSEngine {
             ethLastPrice: this.eth.lastPrice,
             ethAvgVol: this.eth.getAvgVol(),
 
-            // V92 POC Volume Profile
+            // V200 POC Volume Profile
             ...(() => {
                 const p = this.eth.getPOCData();
                 return { ethPOC: p.poc, ethPrevPOC: p.prevPOC, ethPOCSlope: p.slope, ethPOCDir: p.dir, ethVPNodeCount: p.nodeCount };
@@ -618,6 +884,29 @@ export class BitunixWSEngine {
                     ethBigCVD: this.sol.getBigCVD(),
                     ethBigRatio: this.sol.getBigRatio(),
                     ethBigOrderCount: this.sol.getBigOrderCount(),
+                };
+            })(),
+
+            // V300 订单流检测
+            ...(() => {
+                const cvdData = this.sol.getCVDData();
+                const va = this.sol.getValueArea();
+                const absorb = this.sol.getAbsorption();
+                const sweep = this.sol.getSweep();
+                const fakeWall = this.sol.getFakeWall();
+                return {
+                    ethCVD: cvdData.cvd,
+                    ethCVDSlope: cvdData.slope,
+                    ethVAH: va.vah,
+                    ethVAL: va.val,
+                    ethAbsorption: absorb.detected,
+                    ethAbsorptionSide: absorb.side,
+                    ethSweep: sweep.detected,
+                    ethSweepSide: sweep.side,
+                    ethFakeWall: fakeWall.detected,
+                    ethFakeWallSide: fakeWall.side,
+                    ethDOM10AskVol: this.sol.dom10AskVol,
+                    ethDOM10BidVol: this.sol.dom10BidVol,
                 };
             })(),
 
