@@ -349,8 +349,8 @@ class DollarprinterBot {
             polling = true;
             try {
                 lastId = await pollTGCommands(lastId, {
-                "1": async () => { this.paused = false; await notifyTG(`✅ *V200 五模组 Bot 激活*`); },
-                "/start": async () => { this.paused = false; await notifyTG(`✅ *V200 五模组 Bot 激活*`); },
+                "1": async () => { this.paused = false; await notifyTG(`✅ *V300 订单流 AI Bot 激活*`); },
+                "/start": async () => { this.paused = false; await notifyTG(`✅ *V300 订单流 AI Bot 激活*`); },
                 "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                 "y": async () => {
@@ -396,8 +396,8 @@ class DollarprinterBot {
                         await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                     } else { await notifyTG("⚠️ 无持仓"); }
                 },
-                "h": async () => { await notifyTG(`📖 *V200 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
-                "/help": async () => { await notifyTG(`📖 *V200 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | r 反思 | rr 深度反思\nm MTF详情 | x 强平\n🏛️ council 完整辩论 | cq 快速辩论`); },
+                "h": async () => { await notifyTG(`📖 *V300 订单流指令*\n1 激活 | 0 暂停\ny 确认开单 | n 跳过\ns 状态 | r 反思 | x 强平\n🏛️ council 辩论`); },
+                "/help": async () => { await notifyTG(`📖 *V300 订单流指令*\n1 激活 | 0 暂停\ny 确认开单 | n 跳过\ns 状态 | r 反思 | x 强平\n🏛️ council 辩论`); },
                 "m": async () => { await this.sendMtfReport(); },
                 "/mtf": async () => { await this.sendMtfReport(); },
                 "council": async () => { await this.runCouncil(false); },
@@ -435,7 +435,7 @@ class DollarprinterBot {
         const upMs = Date.now() - this.startTime;
         const upH = Math.floor(upMs / 3600_000), upM = Math.floor((upMs % 3600_000) / 60_000);
 
-        let m = `🤖 *V200 五模组 Bot*\n──────────\n`;
+        let m = `🤖 *V300 订单流 AI Bot*\n──────────\n`;
         m += `💰 $${b.toFixed(2)} | ${this.paused ? "🔴暂停" : "🟢运行"} | ${upH}h${upM}m\n`;
         m += `💎 ETH $${s.ethPrice.toFixed(2)}\n`;
         m += `📋 今:${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U\n`;
@@ -465,7 +465,7 @@ class DollarprinterBot {
         const b = await this.executor.getBalance();
         const upH = Math.floor((Date.now() - this.startTime) / 3600_000);
         await notifyTG(
-            `💓 *V200* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
+            `💓 *V300* ${upH}h | ${this.paused ? "🔴" : "🟢"}\n` +
             `ETH $${s.ethPrice.toFixed(2)} | $${b.toFixed(2)}\n` +
             `今${this.dailyTrades}/${MAX_DAILY_TRADES} ${this.dailyPnl >= 0 ? "+" : ""}${this.dailyPnl.toFixed(1)}U`,
         );
