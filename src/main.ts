@@ -591,3 +591,14 @@ class DollarprinterBot {
 const bot = new DollarprinterBot();
 process.on("SIGINT", () => { log("🛑 停止"); process.exit(0); });
 bot.start();
+
+// 🌐 启动微型 HTTP Server 满⾜ Zeabur 端口健康检查
+const port = process.env.PORT || 8080;
+Bun.serve({
+    port,
+    hostname: "0.0.0.0",
+    fetch(req: Request) {
+        return new Response("V300 Dollarprinter Bot is Alive! 🤖💚", { status: 200 });
+    },
+});
+log(`🌐 Zeabur Health check server listening on 0.0.0.0:${port}`);
