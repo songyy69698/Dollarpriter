@@ -1,7 +1,7 @@
 {
     "name": "dollarprinter",
-    "version": "80.0.0",
-    "description": "V80 FINAL-SENSE — Wall Breach Entry + Absorption TP + Wall Pressure TP (Bun/TypeScript)",
+    "version": "3.0.0",
+    "description": "V3 Order Flow Bot — 11-Gate Chain + 4H Observer + Resonance 5/7 (Bun/TypeScript)",
     "scripts": {
         "dev": "bun run src/main.ts",
         "start": "bun run src/main.ts"
