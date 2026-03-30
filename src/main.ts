@@ -367,6 +367,8 @@ class DollarprinterBot {
                     "/status": async () => { await this.sendStatus(); },
                     "audit": async () => { await notifyTG(this.bot.audit.report()); },
                     "/audit": async () => { await notifyTG(this.bot.audit.report()); },
+                    "res": async () => { await this.sendResonanceDetail(); },
+                    "/res": async () => { await this.sendResonanceDetail(); },
                     "x": async () => {
                         const s = this.ws.getSnapshot();
                         const r = await this.executor.forceCloseAll(s.ethPrice);
@@ -391,8 +393,8 @@ class DollarprinterBot {
                         const s = this.bot.storyline;
                         await notifyTG(`📊 *MTF 方向*\nWeekly: ${s.weeklyDirection}\nDaily: ${s.dailyDirection}\n4H: ${s.intradayBias}\nBias: ${s.getBias()}\n──────────\n手动覆盖: 发 \`mtf long short\``);
                     },
-                    "h": async () => { await notifyTG(`📖 *V3 Order Flow 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计 | mtf 方向\nx 强平 | t 测试\nmtf long short 手动设置W/D方向`); },
-                    "/help": async () => { await notifyTG(`📖 *V3 Order Flow 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计 | mtf 方向\nx 强平 | t 测试\nmtf long short 手动设置W/D方向`); },
+                    "h": async () => { await notifyTG(`📖 *V3 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计\nres 共振详情 | mtf 方向\nx 强平 | t 测试\nmtf long short 手动W/D`); },
+                    "/help": async () => { await notifyTG(`📖 *V3 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计\nres 共振详情 | mtf 方向\nx 强平 | t 测试\nmtf long short 手动W/D`); },
                     "t": async () => {
                         const snap = this.ws.getSnapshot();
                         if (snap.ethPrice <= 0) { await notifyTG("⚠️ 无价格"); return; }
@@ -439,6 +441,20 @@ class DollarprinterBot {
             m += `🔥 ETH ${this.executor.positionSide.toUpperCase()} @ $${this.executor.entryPrice.toFixed(prec.price)}\n`;
             m += `浮盈:${pnl >= 0 ? "+" : ""}${pnl.toFixed(prec.price)}pt`;
         }
+        await notifyTG(m);
+    }
+
+    /** 共振7维详情 (对应 Python 蓝图的 resonance detail) */
+    private async sendResonanceDetail() {
+        const rs = this.bot.resonance.current;
+        if (!rs) { await notifyTG("⚠️ 共振尚未评估（等待第一次15min周期）"); return; }
+        let m = `🔮 *Resonance ${rs.confirmCount}/${rs.threshold}* ${rs.passed ? "✅ PASS" : "❌ FAIL"}\n`;
+        m += `方向: ${rs.direction}\n──────────\n`;
+        for (const d of rs.dimensions) {
+            const icon = d.score === 1 ? "✅" : d.score === -1 ? "❌" : "⚪";
+            m += `${icon} \`${d.name}\`\n    ${d.detail}\n`;
+        }
+        m += `──────────\nTotal: ${rs.totalScore} | ${rs.confirmCount}/7 confirmed`;
         await notifyTG(m);
     }
 
