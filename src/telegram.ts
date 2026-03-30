@@ -83,6 +83,10 @@ export async function pollTGCommands(
             if (handler) {
                 log(`✅ 执行指令: "${txt}"`);
                 await handler();
+            } else if (handlers["_catchAll"]) {
+                // 灵活指令（如 "mtf long short"）走 catch-all
+                (handlers as any)._rawText = txt;
+                await handlers["_catchAll"]();
             } else {
                 log(`❓ 未知指令: "${txt}"`);
             }

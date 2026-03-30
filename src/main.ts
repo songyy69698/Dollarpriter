@@ -119,19 +119,30 @@ class DollarprinterBot {
         log("📡 WS 就绪");
     }
 
-    /** 从 Binance 4H K线推断 W/D/4H 方向 */
+    /** 从 Binance K线推断 W/D/4H 方向 (启动时 + 每日自动更新) */
     private async initMTFBias() {
         try {
-            const now = Date.now();
+            // 周线 (4根)
+            const weeklyRes = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=1w&limit=4`);
+            const weeklyData = (await weeklyRes.json()) as any[][];
+            let weeklyDir = Direction.LONG;
+            if (weeklyData.length >= 3) {
+                const wCloses = weeklyData.slice(-3).map(k => +k[4]);
+                weeklyDir = wCloses[2] > wCloses[0] ? Direction.LONG : Direction.SHORT;
+            }
+
             // 日线 (7天)
             const dailyRes = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=1d&limit=7`);
             const dailyData = (await dailyRes.json()) as any[][];
+            let dailyDir = Direction.LONG;
             if (dailyData.length >= 3) {
-                const recentCloses = dailyData.slice(-3).map(k => +k[4]);
-                const dailyDir = recentCloses[2] > recentCloses[0] ? Direction.LONG : Direction.SHORT;
-                this.bot.storyline.updateMtf(dailyDir, dailyDir); // W = D 简化
-                log(`📊 MTF初始化: W/D=${dailyDir}`);
+                const dCloses = dailyData.slice(-3).map(k => +k[4]);
+                dailyDir = dCloses[2] > dCloses[0] ? Direction.LONG : Direction.SHORT;
             }
+
+            this.bot.storyline.updateMtf(weeklyDir, dailyDir);
+            log(`📊 MTF: W=${weeklyDir} D=${dailyDir}`);
+            await notifyTG(`📊 *MTF 自动更新*\nWeekly: ${weeklyDir}\nDaily: ${dailyDir}\n手动覆盖: 发 \`mtf long short\``);
 
             // 4H K线 (12根 = 2天)
             const h4Res = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=4h&limit=12`);
@@ -333,7 +344,7 @@ class DollarprinterBot {
             if (polling) return;
             polling = true;
             try {
-                lastId = await pollTGCommands(lastId, {
+                const cmdHandlers: Record<string, () => Promise<void>> = {
                     "1": async () => { this.paused = false; await notifyTG(`✅ *V3 Order Flow Bot 激活*`); },
                     "/start": async () => { this.paused = false; await notifyTG(`✅ *V3 Order Flow Bot 激活*`); },
                     "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
@@ -376,8 +387,12 @@ class DollarprinterBot {
                             await notifyTG(`🔴 *强平* ${r.netPnlU.toFixed(2)}U`);
                         } else { await notifyTG("⚠️ 无持仓"); }
                     },
-                    "h": async () => { await notifyTG(`📖 *V3 Order Flow 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计\nx 强平 | t 测试`); },
-                    "/help": async () => { await notifyTG(`📖 *V3 Order Flow 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计\nx 强平 | t 测试`); },
+                    "mtf": async () => {
+                        const s = this.bot.storyline;
+                        await notifyTG(`📊 *MTF 方向*\nWeekly: ${s.weeklyDirection}\nDaily: ${s.dailyDirection}\n4H: ${s.intradayBias}\nBias: ${s.getBias()}\n──────────\n手动覆盖: 发 \`mtf long short\``);
+                    },
+                    "h": async () => { await notifyTG(`📖 *V3 Order Flow 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计 | mtf 方向\nx 强平 | t 测试\nmtf long short 手动设置W/D方向`); },
+                    "/help": async () => { await notifyTG(`📖 *V3 Order Flow 指令*\n1 激活 | 0 暂停\ny 确认 | n 跳过\ns 状态 | audit 审计 | mtf 方向\nx 强平 | t 测试\nmtf long short 手动设置W/D方向`); },
                     "t": async () => {
                         const snap = this.ws.getSnapshot();
                         if (snap.ethPrice <= 0) { await notifyTG("⚠️ 无价格"); return; }
@@ -393,7 +408,12 @@ class DollarprinterBot {
                         if (r.ok) await notifyTG(`✅ *测试完成*\n净PnL: ${r.netPnlU >= 0 ? "+" : ""}${r.netPnlU.toFixed(2)}U`);
                         else await notifyTG("❌ 平仓失败");
                     },
-                });
+                    "_catchAll": async () => {
+                        const txt = ((cmdHandlers as any)._rawText || "") as string;
+                        await this.handleFlexCommand(txt);
+                    },
+                };
+                lastId = await pollTGCommands(lastId, cmdHandlers);
             } finally { polling = false; }
         }, 2000);
     }
@@ -422,6 +442,23 @@ class DollarprinterBot {
         await notifyTG(m);
     }
 
+    /** 灵活指令处理 (mtf long short, etc) */
+    private async handleFlexCommand(txt: string) {
+        // mtf <weekly> <daily>
+        const mtfMatch = txt.match(/^mtf\s+(long|short)\s+(long|short)$/i);
+        if (mtfMatch) {
+            const weekly = mtfMatch[1].toUpperCase() === "LONG" ? Direction.LONG : Direction.SHORT;
+            const daily = mtfMatch[2].toUpperCase() === "LONG" ? Direction.LONG : Direction.SHORT;
+            this.bot.storyline.updateMtf(weekly, daily);
+            log(`📊 MTF 手动覆盖: W=${weekly} D=${daily}`);
+            await notifyTG(`📊 *MTF 手动设置*\nWeekly: ${weekly}\nDaily: ${daily}\nBias: ${this.bot.storyline.getBias()}`);
+            return;
+        }
+        // 未识别
+        log(`❓ 未知指令: "${txt}"`);
+    }
+
+    private _lastMtfUpdateDate = "";
     private dailyReset() {
         const dt = new Date();
         const h = (dt.getUTCHours() + 8) % 24, m = dt.getUTCMinutes();
@@ -429,6 +466,13 @@ class DollarprinterBot {
             this.dailyTrades = 0; this.dailyPnl = 0;
             this.bot.kelly.resetDaily();
             log("📅 日重置");
+        }
+        // 每日 00:05 UTC+8 自动更新 MTF 方向
+        const today = dt.toISOString().slice(0, 10);
+        if (h === 0 && m >= 5 && m < 6 && today !== this._lastMtfUpdateDate) {
+            this._lastMtfUpdateDate = today;
+            log("📊 每日自动 MTF 更新触发");
+            this.initMTFBias().catch(e => log(`⚠️ 自动 MTF 更新失败: ${e}`));
         }
     }
 
