@@ -121,6 +121,7 @@ class SymbolTracker {
 
     price = 0;
     priceTs = 0;
+    lastKlineOHLC: { o: number; h: number; l: number; c: number; v: number } | null = null;
 
     bestAsk = 0;
     bestBid = 0;
@@ -936,16 +937,18 @@ export class BitunixWSEngine {
             const subscribeMsg = JSON.stringify({
                 op: "subscribe",
                 args: [
-                    { ch: "trade", symbol: SYMBOL },
-                    { ch: "depth", symbol: SYMBOL },
-                    { ch: "trade", symbol: BTC_SYMBOL },
-                    { ch: "depth", symbol: BTC_SYMBOL },
-                    { ch: "trade", symbol: ETH_SYMBOL },
-                    { ch: "depth", symbol: ETH_SYMBOL },
+                    { ch: "market_trade", symbol: SYMBOL },
+                    { ch: "depth_book15", symbol: SYMBOL },
+                    { ch: "market_kline_1min", symbol: SYMBOL },
+                    { ch: "market_trade", symbol: BTC_SYMBOL },
+                    { ch: "depth_book15", symbol: BTC_SYMBOL },
+                    { ch: "market_trade", symbol: ETH_SYMBOL },
+                    { ch: "depth_book15", symbol: ETH_SYMBOL },
+                    { ch: "market_kline_1min", symbol: ETH_SYMBOL },
                 ],
             });
             this.ws!.send(subscribeMsg);
-            log(`📡 已订阅: [${SYMBOL}] + [${BTC_SYMBOL}] + [${ETH_SYMBOL}]`);
+            log(`📡 已订阅: trade+depth+kline [${SYMBOL}] [${BTC_SYMBOL}] [${ETH_SYMBOL}]`);
         };
 
         this.ws.onclose = () => {
@@ -1046,6 +1049,19 @@ export class BitunixWSEngine {
             tracker.handleTrade(data);
         } else if (ch === "depth5" || ch.includes("depth")) {
             tracker.handleDepth(data);
+        } else if (ch.includes("kline")) {
+            // 处理 K线数据 — 每根完成的单根 K线
+            const klineList = Array.isArray(data) ? data : [data];
+            for (const k of klineList) {
+                const o = +(k.o || k.open || 0);
+                const h = +(k.h || k.high || 0);
+                const l = +(k.l || k.low || 0);
+                const c = +(k.c || k.close || 0);
+                const v = +(k.v || k.vol || k.volume || 0);
+                if (h > 0 && l > 0 && c > 0) {
+                    tracker.lastKlineOHLC = { o, h, l, c, v };
+                }
+            }
         }
     }
 
