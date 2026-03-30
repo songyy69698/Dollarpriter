@@ -158,19 +158,28 @@ class DollarprinterBot {
         }
     }
 
-    /** V3: K线数据持续喂入 (1min Binance) */
+    /** V3: K线数据持续喂入 (15min Binance — 匹配策略ATR时间尺度) */
     private candleLoop() {
-        setInterval(async () => {
-            try {
-                const res = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=1m&limit=3`);
-                const data = (await res.json()) as any[][];
-                if (data.length >= 2) {
-                    // 用倒数第二根完成的K线
-                    const k = data[data.length - 2];
-                    this.bot.feedCandle(+k[2], +k[3], +k[4]);
+        // 启动时立即拉一次
+        this.fetch15mCandles();
+        setInterval(() => this.fetch15mCandles(), 60_000); // 每分钟检查
+    }
+    private _last15mTs = 0;
+    private async fetch15mCandles() {
+        try {
+            const res = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=15m&limit=3`);
+            const data = (await res.json()) as any[][];
+            if (data.length >= 2) {
+                const k = data[data.length - 2]; // 倒数第二根(已完成)
+                const ts = +k[0];
+                if (ts !== this._last15mTs) {
+                    this._last15mTs = ts;
+                    const h = +k[2], l = +k[3], c = +k[4];
+                    this.bot.feedCandle(h, l, c);
+                    log(`📊 15m: H=${h.toFixed(2)} L=${l.toFixed(2)} C=${c.toFixed(2)} ATR=${this.bot.atr.atrFast.toFixed(2)}`);
                 }
-            } catch { /* ignore */ }
-        }, 30_000);
+            }
+        } catch { /* ignore */ }
     }
 
     // ═══ V3 策略循环 ═══
@@ -190,11 +199,12 @@ class DollarprinterBot {
             // 从 WS 获取 VA 数据
             const vaData = (this.ws as any).eth?.getValueArea?.() || { vah: snap.ethVAH, val: snap.ethVAL, poc: snap.ethPOC };
 
-            // 构建 tick input
+            // 构建 tick input — 用 WS 实时价格
+            const atrBuf = Math.max(this.bot.atr.atrFast * 0.1, 0.5); // 用 ATR 的10%做瞬时H/L估算
             const tickInput: TickInput = {
                 now: new Date(),
                 open: snap.ethPrice, close: snap.ethPrice,
-                high: snap.ethPrice + 0.5, low: snap.ethPrice - 0.5,
+                high: snap.ethPrice + atrBuf, low: snap.ethPrice - atrBuf,
                 volume: snap.ethAvgVol || 1,
                 cvd: snap.ethCVD, poc: snap.ethPOC,
                 vah: vaData.vah || snap.ethVAH || 0,
