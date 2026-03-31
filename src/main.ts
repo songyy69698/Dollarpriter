@@ -144,15 +144,24 @@ class DollarprinterBot {
             log(`📊 MTF: W=${weeklyDir} D=${dailyDir}`);
             await notifyTG(`📊 *MTF 自动更新*\nWeekly: ${weeklyDir}\nDaily: ${dailyDir}\n手动覆盖: 发 \`mtf long short\``);
 
-            // 4H K线 (12根 = 2天)
+            // 4H K线 (12根 = 2天) → 只给 4H Observer，不喂 ATR！
             const h4Res = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=4h&limit=12`);
             const h4Data = (await h4Res.json()) as any[][];
             for (const k of h4Data) {
                 const h = +k[2], l = +k[3], c = +k[4], v = +k[5];
-                this.bot.feedCandle(h, l, c);
+                // ❌ 不调用 feedCandle — 4H 范围($40-100)会污染 15m ATR
                 this.bot.fourHour.update(new Date(+k[0]), h, l, c, v);
             }
             log(`📊 4H Observer: ${h4Data.length}根K线 → bias=${this.bot.storyline.intradayBias}`);
+
+            // 15m K线 (50根 = 12.5小时) → 初始化 ATR
+            const m15Res = await fetch(`${BINANCE_BASE}/api/v3/klines?symbol=ETHUSDT&interval=15m&limit=50`);
+            const m15Data = (await m15Res.json()) as any[][];
+            for (const k of m15Data) {
+                const h = +k[2], l = +k[3], c = +k[4];
+                this.bot.feedCandle(h, l, c);
+            }
+            log(`📊 ATR init: ${m15Data.length}根15m → fast=${this.bot.atr.atrFast.toFixed(2)} slow=${this.bot.atr.atrSlow.toFixed(2)}`);
         } catch (e) {
             log(`⚠️ MTF init 失败: ${e}`);
         }
