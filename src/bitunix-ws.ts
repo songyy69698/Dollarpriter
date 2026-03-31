@@ -1000,6 +1000,13 @@ export class BitunixWSEngine {
         const ch = msg?.ch || msg?.arg?.ch || "";
         const symbol = msg?.symbol || msg?.arg?.symbol || "";
         const data = msg?.data;
+
+        // DEBUG: WS 数据流诊断
+        if (this.msgCount <= 30) {
+            const firstItem = Array.isArray(data) ? data[0] : data;
+            log(`📡 WS: ch=${ch} sym=${symbol} price=${firstItem?.c || firstItem?.p || "no_price"}`);
+        }
+
         if (!data) return;
 
         const tracker = this.getTracker(symbol);
