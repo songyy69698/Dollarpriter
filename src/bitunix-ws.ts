@@ -794,42 +794,42 @@ export class BitunixWSEngine {
     // ═══════════════════════════════════════════════
 
     getSnapshot(): CausalSnapshot {
-        // SOL
-        const solDelta = this.sol.getDelta();
-        const solEfficiency = this.sol.getLastEfficiency();
-        const solAvgEfficiency = this.sol.getAvgEfficiency();
-        const solAvgVol = this.sol.getAvgVol();
-        const solRecentVol = this.sol.getRecentVol();
-        const isEfficiencyDecay = solRecentVol > solAvgVol * 3 && solEfficiency < 0.2;
+        // 主交易币种 = ETH (SYMBOL=ETHUSDT → 数据在 this.eth)
+        const mainDelta = this.eth.getDelta();
+        const mainEfficiency = this.eth.getLastEfficiency();
+        const mainAvgEfficiency = this.eth.getAvgEfficiency();
+        const mainAvgVol = this.eth.getAvgVol();
+        const mainRecentVol = this.eth.getRecentVol();
+        const isEfficiencyDecay = mainRecentVol > mainAvgVol * 3 && mainEfficiency < 0.2;
 
         // BTC
         const btcDelta = this.btc.getDelta();
 
-        // ETH
-        const ethDelta = this.eth.getDelta();
-        const ethEfficiency = this.eth.getLastEfficiency();
-        const ethAvgEfficiency = this.eth.getAvgEfficiency();
+        // ETH (same as main)
+        const ethDelta = mainDelta;
+        const ethEfficiency = mainEfficiency;
+        const ethAvgEfficiency = mainAvgEfficiency;
 
         return {
-            price: this.sol.price,
-            priceTs: this.sol.priceTs,
+            price: this.eth.price,
+            priceTs: this.eth.priceTs,
             connected: this._connected,
 
-            buyDelta: solDelta.buyDelta,
-            sellDelta: solDelta.sellDelta,
-            netDelta: solDelta.buyDelta - solDelta.sellDelta,
+            buyDelta: mainDelta.buyDelta,
+            sellDelta: mainDelta.sellDelta,
+            netDelta: mainDelta.buyDelta - mainDelta.sellDelta,
 
-            askWallVol: this.sol.askWallVol,
-            bidWallVol: this.sol.bidWallVol,
-            bestAsk: this.sol.bestAsk,
-            bestBid: this.sol.bestBid,
-            spread: this.sol.bestAsk > 0 && this.sol.bestBid > 0
-                ? this.sol.bestAsk - this.sol.bestBid : 999,
+            askWallVol: this.eth.askWallVol,
+            bidWallVol: this.eth.bidWallVol,
+            bestAsk: this.eth.bestAsk,
+            bestBid: this.eth.bestBid,
+            spread: this.eth.bestAsk > 0 && this.eth.bestBid > 0
+                ? this.eth.bestAsk - this.eth.bestBid : 999,
 
-            efficiency: solEfficiency,
-            avgEfficiency: solAvgEfficiency,
-            avgVol: solAvgVol,
-            recentVol: solRecentVol,
+            efficiency: mainEfficiency,
+            avgEfficiency: mainAvgEfficiency,
+            avgVol: mainAvgVol,
+            recentVol: mainRecentVol,
             isEfficiencyDecay,
 
             // BTC
@@ -856,7 +856,7 @@ export class BitunixWSEngine {
             ethBestAsk: this.eth.bestAsk,
             ethBestBid: this.eth.bestBid,
             ethTop3Depth: this.eth.top3Depth,
-            recentDeltaDirs: this.sol.getRecentDeltaDirs(),
+            recentDeltaDirs: this.eth.getRecentDeltaDirs(),
             ethRecentDeltaDirs: this.eth.getRecentDeltaDirs(),
 
             // 能量 vs 阻力
