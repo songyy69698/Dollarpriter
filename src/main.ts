@@ -199,13 +199,17 @@ class DollarprinterBot {
             // 从 WS 获取 VA 数据
             const vaData = (this.ws as any).eth?.getValueArea?.() || { vah: snap.ethVAH, val: snap.ethVAL, poc: snap.ethPOC };
 
-            // 构建 tick input — 用 WS 实时价格
-            const atrBuf = Math.max(this.bot.atr.atrFast * 0.1, 0.5); // 用 ATR 的10%做瞬时H/L估算
+            // 构建 tick input — 优先用 WS K线真实 OHLC
+            const ethTracker = (this.ws as any).eth;
+            const kline = ethTracker?.lastKlineOHLC;
+            const price = snap.ethPrice;
             const tickInput: TickInput = {
                 now: new Date(),
-                open: snap.ethPrice, close: snap.ethPrice,
-                high: snap.ethPrice + atrBuf, low: snap.ethPrice - atrBuf,
-                volume: snap.ethAvgVol || 1,
+                open: kline?.o || price,
+                high: kline?.h || price,
+                low: kline?.l || price,
+                close: kline?.c || price,
+                volume: kline?.v || snap.ethAvgVol || 1,
                 cvd: snap.ethCVD, poc: snap.ethPOC,
                 vah: vaData.vah || snap.ethVAH || 0,
                 val: vaData.val || snap.ethVAL || 0,
