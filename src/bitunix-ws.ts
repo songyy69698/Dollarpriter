@@ -1077,9 +1077,11 @@ export class BitunixWSEngine {
 
     private getTracker(symbol: string): SymbolTracker | null {
         const upper = (symbol || "").toUpperCase();
-        if (upper === SYMBOL || upper.includes("SOL")) return this.sol;
-        if (upper === BTC_SYMBOL || upper.includes("BTC")) return this.btc;
+        // 🔥 ETH 必须在 SOL/SYMBOL 之前检查！
+        // 因为 SYMBOL=ETHUSDT 会先匹配 sol tracker，导致 eth tracker 永远收不到数据
         if (upper === ETH_SYMBOL || upper.includes("ETH")) return this.eth;
+        if (upper === BTC_SYMBOL || upper.includes("BTC")) return this.btc;
+        if (upper === SYMBOL || upper.includes("SOL")) return this.sol;
         return null;
     }
 }
