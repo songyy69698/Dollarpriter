@@ -1057,16 +1057,19 @@ export class BitunixWSEngine {
         } else if (ch === "depth5" || ch.includes("depth")) {
             tracker.handleDepth(data);
         } else if (ch.includes("kline")) {
-            // 处理 K线数据 — 每根完成的单根 K线
+            // 处理 K线数据 — 实时更新 OHLC + 价格
             const klineList = Array.isArray(data) ? data : [data];
             for (const k of klineList) {
                 const o = +(k.o || k.open || 0);
                 const h = +(k.h || k.high || 0);
                 const l = +(k.l || k.low || 0);
                 const c = +(k.c || k.close || 0);
-                const v = +(k.v || k.vol || k.volume || 0);
+                const v = +(k.v || k.vol || k.volume || k.b || 0);
                 if (h > 0 && l > 0 && c > 0) {
                     tracker.lastKlineOHLC = { o, h, l, c, v };
+                    // 🔥 关键: 用 kline close 作为实时价格
+                    tracker.price = c;
+                    tracker.priceTs = Date.now();
                 }
             }
         }
