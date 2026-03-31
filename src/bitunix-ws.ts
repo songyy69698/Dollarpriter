@@ -874,27 +874,26 @@ export class BitunixWSEngine {
             })(),
 
             // V95 大单 Delta 引擎
-            // 注意: 当 SYMBOL=ETHUSDT 时, ETH数据流入 sol 追踪器
-            // 所以从 sol 读取大单数据 (= 主交易币种)
+            // 🔥 修复: 数据已流入 this.eth (getTracker 路由修复后)
             ...(() => {
-                const bd = this.sol.getBigDelta();
+                const bd = this.eth.getBigDelta();
                 return {
                     ethBigBuyDelta: bd.buyDelta,
                     ethBigSellDelta: bd.sellDelta,
                     ethBigNetDelta: bd.netDelta,
-                    ethBigCVD: this.sol.getBigCVD(),
-                    ethBigRatio: this.sol.getBigRatio(),
-                    ethBigOrderCount: this.sol.getBigOrderCount(),
+                    ethBigCVD: this.eth.getBigCVD(),
+                    ethBigRatio: this.eth.getBigRatio(),
+                    ethBigOrderCount: this.eth.getBigOrderCount(),
                 };
             })(),
 
             // V300 订单流检测
             ...(() => {
-                const cvdData = this.sol.getCVDData();
-                const va = this.sol.getValueArea();
-                const absorb = this.sol.getAbsorption();
-                const sweep = this.sol.getSweep();
-                const fakeWall = this.sol.getFakeWall();
+                const cvdData = this.eth.getCVDData();
+                const va = this.eth.getValueArea();
+                const absorb = this.eth.getAbsorption();
+                const sweep = this.eth.getSweep();
+                const fakeWall = this.eth.getFakeWall();
                 return {
                     ethCVD: cvdData.cvd,
                     ethCVDSlope: cvdData.slope,
@@ -906,8 +905,8 @@ export class BitunixWSEngine {
                     ethSweepSide: sweep.side,
                     ethFakeWall: fakeWall.detected,
                     ethFakeWallSide: fakeWall.side,
-                    ethDOM10AskVol: this.sol.dom10AskVol,
-                    ethDOM10BidVol: this.sol.dom10BidVol,
+                    ethDOM10AskVol: this.eth.dom10AskVol,
+                    ethDOM10BidVol: this.eth.dom10BidVol,
                 };
             })(),
 
