@@ -39,7 +39,21 @@ export async function notifyTG(text: string): Promise<void> {
         });
         const data = await res.json() as any;
         if (!data.ok) {
-            log(`❌ TG 发送失败: ${JSON.stringify(data).slice(0, 200)}`);
+            // Markdown 解析失败 → 去掉格式重试
+            if (data.error_code === 400 && data.description?.includes("parse entities")) {
+                log(`⚠️ Markdown 格式错误, 纯文本重试...`);
+                const plainText = text.replace(/[*_`\[\]]/g, "");
+                const res2 = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ chat_id: TG_CHAT_ID, text: plainText }),
+                });
+                const data2 = await res2.json() as any;
+                if (!data2.ok) log(`❌ TG 纯文本也失败: ${JSON.stringify(data2).slice(0, 200)}`);
+                else log(`✅ TG 纯文本发送成功`);
+            } else {
+                log(`❌ TG 发送失败: ${JSON.stringify(data).slice(0, 200)}`);
+            }
         } else {
             log(`✅ TG 发送成功 → chat=${TG_CHAT_ID}`);
         }
