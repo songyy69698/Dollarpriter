@@ -217,9 +217,6 @@ class DollarprinterBot {
                 absorptionSide: snap.ethAbsorptionSide,
             };
 
-            // RAW data debug
-            log(`RAW: o=${tickInput.open.toFixed(2)} h=${tickInput.high.toFixed(2)} l=${tickInput.low.toFixed(2)} c=${tickInput.close.toFixed(2)} cvd=${tickInput.cvd.toFixed(1)} poc=${tickInput.poc.toFixed(2)} vah=${tickInput.vah.toFixed(2)} val=${tickInput.val.toFixed(2)}`);
-
             // 运行 V3 tick
             const result = this.bot.tick(tickInput);
 
