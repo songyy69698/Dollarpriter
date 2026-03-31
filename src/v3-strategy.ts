@@ -969,14 +969,14 @@ export class ETHOrderFlowBot {
     /** Telegram 格式状态 */
     statusTG(): string {
         const s = this.status();
-        return `🧠 *V3 Order Flow Bot*\n` +
+        return `🧠 V3 Order Flow Bot\n` +
             `──────────\n` +
             `📊 ATR: ${s.atrFast}/${s.atrSlow} | ${s.volRegime}\n` +
-            `🎚 Lev: ${s.dynLeverage} | Tier: ${s.tier}\n` +
+            `📏 Lev: ${s.dynLeverage} | Tier: ${s.tier}\n` +
             `📈 Bias: ${s.bias} | 4H: ${s.h4Bias}\n` +
             `🔮 Resonance: ${s.resonance}\n` +
             `🔗 Gates: ${s.lastGates} | Reject: ${s.lastReject}\n` +
-            `�� Kelly: ${s.kelly} | Phase: ${s.phase}\n` +
+            `📊 Kelly: ${s.kelly} | Phase: ${s.phase}\n` +
             `📋 Signals: ${s.totalSignals} | Wins: ${this.kelly.dailyConsecWins}`;
     }
 }
