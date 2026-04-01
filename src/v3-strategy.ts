@@ -429,7 +429,7 @@ export class FourHourObserver {
 // ═══════════════════════════════════════════════
 
 export class ResonanceScorer {
-    static readonly CONFIRM_THRESHOLD = 5;
+    static readonly CONFIRM_THRESHOLD = 4;
     static readonly EVAL_INTERVAL_MS = 15 * 60_000;
 
     snapshots: ResonanceSnapshot[] = [];
