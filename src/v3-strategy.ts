@@ -250,6 +250,49 @@ export class StopLossEngine {
         const notional = this.maxLossAmount() / eff;
         return (notional / leverage) * coldScale;
     }
+
+    /** TP = entry + risk × rrRatio (默认 2:1) */
+    computeTP(entry: number, stop: number, dir: Direction, rrRatio = 2.0): number {
+        const risk = Math.abs(entry - stop);
+        const reward = risk * rrRatio;
+        return dir === Direction.LONG ? entry + reward : entry - reward;
+    }
+
+    /** 3 阶段移动止损: 原始 → 保本(1R) → 跟踪(ATR×0.8) */
+    updateTrailingStop(trade: ActiveTrade, currentHigh: number, currentLow: number) {
+        const entry = trade.entryPrice;
+        const risk = Math.abs(entry - trade.initialStop);
+        if (risk === 0) return;
+
+        if (trade.direction === Direction.LONG) {
+            trade.bestPrice = Math.max(trade.bestPrice, currentHigh);
+            const profit = trade.bestPrice - entry;
+            // Phase 2: 保本
+            if (profit >= risk && !trade.stopMovedToBreakeven) {
+                trade.stopLoss = entry;
+                trade.stopMovedToBreakeven = true;
+                trade.trailingActive = true;
+            }
+            // Phase 3: 跟踪
+            if (trade.trailingActive) {
+                const newStop = trade.bestPrice - this.atr.atrFast * 0.8;
+                if (newStop > trade.stopLoss) trade.stopLoss = newStop;
+            }
+        } else {
+            if (trade.bestPrice === 0) trade.bestPrice = currentLow;
+            trade.bestPrice = Math.min(trade.bestPrice, currentLow);
+            const profit = entry - trade.bestPrice;
+            if (profit >= risk && !trade.stopMovedToBreakeven) {
+                trade.stopLoss = entry;
+                trade.stopMovedToBreakeven = true;
+                trade.trailingActive = true;
+            }
+            if (trade.trailingActive) {
+                const newStop = trade.bestPrice + this.atr.atrFast * 0.8;
+                if (newStop < trade.stopLoss) trade.stopLoss = newStop;
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════
@@ -262,6 +305,7 @@ export class StorylineEngine {
     intradayBias: Direction = Direction.NEUTRAL;
     pocHistory: { ts: Date; poc: number }[] = [];
     exhaustionActive = false;
+    exhaustionSignals: string[] = [];
 
     updateMtf(weekly: Direction, daily: Direction) { this.weeklyDirection = weekly; this.dailyDirection = daily; }
     updateIntradayBias(bias: Direction) { this.intradayBias = bias; }
@@ -292,8 +336,28 @@ export class StorylineEngine {
         return false;
     }
 
+    /** 趋势衰竭检测 — CLIMAX_CANDLE / EXHAUSTION_GAP / FINAL_FLAG */
+    detectExhaustion(candleRange: number, avgRange: number, volume: number, avgVolume: number, hasGap: boolean, isFlag: boolean): string | null {
+        if (candleRange > avgRange * 2 && volume > avgVolume * 2.5) {
+            this.exhaustionSignals.push("CLIMAX_CANDLE");
+            this.exhaustionActive = true;
+            return "CLIMAX_CANDLE";
+        }
+        if (hasGap && volume > avgVolume * 1.5) {
+            this.exhaustionSignals.push("EXHAUSTION_GAP");
+            this.exhaustionActive = true;
+            return "EXHAUSTION_GAP";
+        }
+        if (isFlag && candleRange < avgRange * 0.4) {
+            this.exhaustionSignals.push("FINAL_FLAG");
+            this.exhaustionActive = true;
+            return "FINAL_FLAG";
+        }
+        return null;
+    }
+
     shouldProtectProfit(): boolean { return this.exhaustionActive; }
-    setExhaustion(active: boolean) { this.exhaustionActive = active; }
+    clearExhaustion() { this.exhaustionActive = false; this.exhaustionSignals = []; }
 }
 
 // ═══════════════════════════════════════════════
@@ -443,6 +507,13 @@ export class ResonanceScorer {
     // Slopes
     private cvdHistory: { ts: number; val: number }[] = [];
     private priceHistory: { ts: number; val: number }[] = [];
+    // Swing tracking for CVD divergence
+    private swingWindow: number[] = [];
+    private swingCvdWindow: number[] = [];
+    private priceLows: number[] = [];
+    private priceHighs: number[] = [];
+    private cvdAtLows: number[] = [];
+    private cvdAtHighs: number[] = [];
 
     updateData(now: Date, price: number, volume: number, cvd: number) {
         if (this.lastDay >= 0 && now.getUTCDate() !== this.lastDay) { this.vwapNum = 0; this.vwapDen = 0; }
@@ -452,6 +523,36 @@ export class ResonanceScorer {
         const ts = now.getTime();
         this.cvdHistory.push({ ts, val: cvd }); if (this.cvdHistory.length > 30) this.cvdHistory.shift();
         this.priceHistory.push({ ts, val: price }); if (this.priceHistory.length > 30) this.priceHistory.shift();
+
+        // 5-bar swing detection
+        this.swingWindow.push(price); this.swingCvdWindow.push(cvd);
+        if (this.swingWindow.length > 5) { this.swingWindow.shift(); this.swingCvdWindow.shift(); }
+        if (this.swingWindow.length === 5) {
+            const mid = this.swingWindow[2];
+            if (mid === Math.min(...this.swingWindow)) {
+                this.priceLows.push(mid); this.cvdAtLows.push(this.swingCvdWindow[2]);
+                if (this.priceLows.length > 10) { this.priceLows.shift(); this.cvdAtLows.shift(); }
+            }
+            if (mid === Math.max(...this.swingWindow)) {
+                this.priceHighs.push(mid); this.cvdAtHighs.push(this.swingCvdWindow[2]);
+                if (this.priceHighs.length > 10) { this.priceHighs.shift(); this.cvdAtHighs.shift(); }
+            }
+        }
+    }
+
+    /** CVD 背离检测: bullish = price LL + CVD HL; bearish = price HH + CVD LH */
+    detectDivergence(dir: Direction): string | null {
+        if (dir === Direction.LONG && this.priceLows.length >= 2 && this.cvdAtLows.length >= 2) {
+            const [p1, p2] = this.priceLows.slice(-2);
+            const [c1, c2] = this.cvdAtLows.slice(-2);
+            if (p2 < p1 && c2 > c1) return `bullish: price LL ${p1.toFixed(0)}→${p2.toFixed(0)} CVD HL ${c1.toFixed(0)}→${c2.toFixed(0)}`;
+        }
+        if (dir === Direction.SHORT && this.priceHighs.length >= 2 && this.cvdAtHighs.length >= 2) {
+            const [p1, p2] = this.priceHighs.slice(-2);
+            const [c1, c2] = this.cvdAtHighs.slice(-2);
+            if (p2 > p1 && c2 < c1) return `bearish: price HH ${p1.toFixed(0)}→${p2.toFixed(0)} CVD LH ${c1.toFixed(0)}→${c2.toFixed(0)}`;
+        }
+        return null;
     }
 
     get vwap(): number { return this.vwapDen > 0 ? this.vwapNum / this.vwapDen : 0; }
@@ -487,12 +588,20 @@ export class ResonanceScorer {
             dims.push({ name: "4H_BIAS", score: -1, detail: `4H=${h4Assessment?.bias ?? "N/A"} vs ${direction}` });
         }
 
-        // D2: CVD vs Price
+        // D2: CVD vs Price (with divergence detection)
         const cvdS = this.slope(this.cvdHistory), priceS = this.slope(this.priceHistory);
         const cvdOk = isLong ? cvdS > 0 : cvdS < 0;
         const priceOk = isLong ? priceS > 0 : priceS < 0;
-        dims.push({ name: "CVD_PRICE", score: cvdOk && priceOk ? 1 : cvdOk !== priceOk ? 0 : -1,
-            detail: `cvd=${cvdS.toFixed(1)} price=${priceS.toFixed(1)}` });
+        const divergence = this.detectDivergence(direction);
+        if (divergence) {
+            dims.push({ name: "CVD_PRICE", score: 1, detail: `DIVERGENCE ${divergence}` });
+        } else if (cvdOk && priceOk) {
+            dims.push({ name: "CVD_PRICE", score: 1, detail: `aligned cvd=${cvdS.toFixed(1)} price=${priceS.toFixed(1)}` });
+        } else if (cvdOk !== priceOk) {
+            dims.push({ name: "CVD_PRICE", score: 0, detail: `cvd=${cvdS.toFixed(1)} price=${priceS.toFixed(1)}` });
+        } else {
+            dims.push({ name: "CVD_PRICE", score: -1, detail: `cvd=${cvdS.toFixed(1)} price=${priceS.toFixed(1)}` });
+        }
 
         // D3: Absorption
         if (absorptionDir === direction) dims.push({ name: "ABSORPTION", score: 1, detail: `absorption→${direction}` });
@@ -544,6 +653,133 @@ export class ResonanceScorer {
     }
 
     get isConfirmed(): boolean { return this.current?.passed ?? false; }
+}
+
+// ═══════════════════════════════════════════════
+// FVGDetector (Fair Value Gap)
+// ═══════════════════════════════════════════════
+
+interface FVGZone {
+    direction: Direction; upper: number; lower: number;
+    timestamp: Date; candleIdx: number;
+    isFilled: boolean; isRetested: boolean; engulfingConfirmed: boolean;
+    fvgSize: number;
+}
+
+interface CandleRecord { o: number; h: number; l: number; c: number; v: number; }
+
+export class FVGDetector {
+    static readonly MIN_FVG_ATR_MULT = 0.1;
+    static readonly FVG_EXPIRY = 30;
+    static readonly MAX_FVGS = 20;
+
+    private candles: CandleRecord[] = [];
+    activeFVGs: FVGZone[] = [];
+    private candleCount = 0;
+
+    constructor(private atr: AdaptiveATR) {}
+
+    feedCandle(now: Date, o: number, h: number, l: number, c: number, v = 0) {
+        this.candleCount++;
+        this.candles.push({ o, h, l, c, v });
+        if (this.candles.length > 50) this.candles = this.candles.slice(-50);
+
+        if (this.candles.length >= 3) this.detectFVG(now);
+        this.updateFVGs(h, l);
+        if (this.candles.length >= 2) this.checkEngulfing();
+        this.expireFVGs();
+    }
+
+    private detectFVG(now: Date) {
+        const c0 = this.candles[this.candles.length - 3];
+        const c2 = this.candles[this.candles.length - 1];
+        const minGap = this.atr.atrFast * FVGDetector.MIN_FVG_ATR_MULT;
+
+        // Bullish FVG: c2.l > c0.h
+        if (c2.l > c0.h && (c2.l - c0.h) >= minGap) {
+            this.activeFVGs.push({ direction: Direction.LONG, upper: c2.l, lower: c0.h,
+                timestamp: now, candleIdx: this.candleCount, isFilled: false,
+                isRetested: false, engulfingConfirmed: false, fvgSize: c2.l - c0.h });
+        }
+        // Bearish FVG: c2.h < c0.l
+        if (c2.h < c0.l && (c0.l - c2.h) >= minGap) {
+            this.activeFVGs.push({ direction: Direction.SHORT, upper: c0.l, lower: c2.h,
+                timestamp: now, candleIdx: this.candleCount, isFilled: false,
+                isRetested: false, engulfingConfirmed: false, fvgSize: c0.l - c2.h });
+        }
+        if (this.activeFVGs.length > FVGDetector.MAX_FVGS) this.activeFVGs = this.activeFVGs.slice(-FVGDetector.MAX_FVGS);
+    }
+
+    private updateFVGs(high: number, low: number) {
+        for (const fvg of this.activeFVGs) {
+            if (fvg.isFilled) continue;
+            if (fvg.direction === Direction.LONG) {
+                if (low <= fvg.lower) fvg.isFilled = true;
+                else if (low <= fvg.upper) fvg.isRetested = true;
+            } else {
+                if (high >= fvg.upper) fvg.isFilled = true;
+                else if (high >= fvg.lower) fvg.isRetested = true;
+            }
+        }
+    }
+
+    private checkEngulfing() {
+        const prev = this.candles[this.candles.length - 2];
+        const curr = this.candles[this.candles.length - 1];
+        const prevBodyTop = Math.max(prev.o, prev.c), prevBodyBot = Math.min(prev.o, prev.c);
+        const currBodyTop = Math.max(curr.o, curr.c), currBodyBot = Math.min(curr.o, curr.c);
+
+        for (const fvg of this.activeFVGs) {
+            if (fvg.isFilled || !fvg.isRetested || fvg.engulfingConfirmed) continue;
+            if (fvg.direction === Direction.LONG) {
+                if (curr.c >= curr.o && curr.c > prev.h && currBodyBot <= prevBodyBot && currBodyTop >= prevBodyTop)
+                    fvg.engulfingConfirmed = true;
+            } else {
+                if (curr.c < curr.o && curr.c < prev.l && currBodyTop >= prevBodyTop && currBodyBot <= prevBodyBot)
+                    fvg.engulfingConfirmed = true;
+            }
+        }
+    }
+
+    private expireFVGs() {
+        const cutoff = this.candleCount - FVGDetector.FVG_EXPIRY;
+        this.activeFVGs = this.activeFVGs.filter(f => !f.isFilled && f.candleIdx > cutoff);
+    }
+
+    getConfirmedFVG(dir: Direction): FVGZone | null {
+        return [...this.activeFVGs].reverse().find(f => f.direction === dir && f.isRetested && f.engulfingConfirmed && !f.isFilled) ?? null;
+    }
+    getRestestedFVG(dir: Direction): FVGZone | null {
+        return [...this.activeFVGs].reverse().find(f => f.direction === dir && f.isRetested && !f.isFilled) ?? null;
+    }
+    getAnyFVG(dir: Direction): FVGZone | null {
+        return [...this.activeFVGs].reverse().find(f => f.direction === dir && !f.isFilled) ?? null;
+    }
+
+    getOriginPrice(dir: Direction): number | null {
+        const fvg = this.getConfirmedFVG(dir) || this.getRestestedFVG(dir) || this.getAnyFVG(dir);
+        if (!fvg) return null;
+        return dir === Direction.LONG ? fvg.lower : fvg.upper;
+    }
+
+    diagnose(dir: Direction): string {
+        const c = this.getConfirmedFVG(dir);
+        if (c) return `confirmed ${c.lower.toFixed(1)}-${c.upper.toFixed(1)}`;
+        const r = this.getRestestedFVG(dir);
+        if (r) return `retested ${r.lower.toFixed(1)}-${r.upper.toFixed(1)}`;
+        const a = this.getAnyFVG(dir);
+        if (a) return `active ${a.lower.toFixed(1)}-${a.upper.toFixed(1)}`;
+        return `no ${dir} FVG`;
+    }
+
+    get stats() {
+        const total = this.activeFVGs.length;
+        const bull = this.activeFVGs.filter(f => f.direction === Direction.LONG).length;
+        const bear = this.activeFVGs.filter(f => f.direction === Direction.SHORT).length;
+        const retested = this.activeFVGs.filter(f => f.isRetested).length;
+        const confirmed = this.activeFVGs.filter(f => f.engulfingConfirmed).length;
+        return { total, bull, bear, retested, confirmed, candles: this.candleCount };
+    }
 }
 
 // ═══════════════════════════════════════════════
@@ -705,6 +941,11 @@ export interface ActiveTrade {
     entryPrice: number; direction: Direction; entryTime: Date;
     stopLoss: number; size: number; leverageUsed: number; isPaper: boolean;
     windowName: string;
+    // TP
+    takeProfit: number | null; tpRatio: number;
+    // Trailing stop
+    initialStop: number; bestPrice: number;
+    trailingActive: boolean; stopMovedToBreakeven: boolean;
 }
 
 export class ETHOrderFlowBot {
@@ -719,6 +960,7 @@ export class ETHOrderFlowBot {
     stopLoss: StopLossEngine;
     kelly = new KellyRiskManager();
     timeGuard: TimeGuardEngine;
+    fvg: FVGDetector;
 
     activeTrade: ActiveTrade | null = null;
     dailyTrades = 0;
@@ -732,6 +974,7 @@ export class ETHOrderFlowBot {
         this.fourHour = new FourHourObserver(this.storyline);
         this.stopLoss = new StopLossEngine(capital, this.atr, this.slippage);
         this.timeGuard = new TimeGuardEngine(this.atr);
+        this.fvg = new FVGDetector(this.atr);
     }
 
     feedCandle(high: number, low: number, close: number) { this.atr.update(high, low, close); }
@@ -764,13 +1007,31 @@ export class ETHOrderFlowBot {
 
         // ── MANAGE OPEN POSITION ──
         if (this.activeTrade) {
-            const forceClose = this.timeGuard.shouldForceClose(this.activeTrade.entryTime, now);
+            const t = this.activeTrade;
+            // 1. Time guard
+            const forceClose = this.timeGuard.shouldForceClose(t.entryTime, now);
             if (forceClose) return `CLOSE: ${forceClose}`;
-            if (this.storyline.shouldProtectProfit()) return "CLOSE: exhaustion_protection";
+            // 2. TP hit
+            if (t.takeProfit !== null) {
+                if (t.direction === Direction.LONG && high >= t.takeProfit) return `CLOSE: tp_hit TP=${t.takeProfit.toFixed(2)} RR=${t.tpRatio.toFixed(0)}:1`;
+                if (t.direction === Direction.SHORT && low <= t.takeProfit) return `CLOSE: tp_hit TP=${t.takeProfit.toFixed(2)} RR=${t.tpRatio.toFixed(0)}:1`;
+            }
+            // 3. Update trailing stop
+            this.stopLoss.updateTrailingStop(t, high, low);
+            // 4. Stop/trailing hit
+            if (t.direction === Direction.LONG && low <= t.stopLoss) {
+                return `CLOSE: ${t.trailingActive ? 'trailing_stop' : 'stop_loss'}_hit SL=${t.stopLoss.toFixed(2)}`;
+            }
+            if (t.direction === Direction.SHORT && high >= t.stopLoss) {
+                return `CLOSE: ${t.trailingActive ? 'trailing_stop' : 'stop_loss'}_hit SL=${t.stopLoss.toFixed(2)}`;
+            }
+            // 5. Predicted close
             if (inp.predictedClose !== undefined) {
                 const tol = this.atr.atr14 * 0.20;
                 if (Math.abs(close - inp.predictedClose) <= tol) return "CLOSE: predicted_close_reached";
             }
+            // 6. Exhaustion
+            if (this.storyline.shouldProtectProfit()) return "CLOSE: exhaustion_protection";
             return null;
         }
 
@@ -779,6 +1040,9 @@ export class ETHOrderFlowBot {
 
         // ── RESONANCE DATA ──
         this.resonance.updateData(now, close, volume, cvd);
+
+        // ── FVG DETECTION ──
+        this.fvg.feedCandle(now, open, high, low, close, volume);
 
         // ── RESONANCE EVALUATION ──
         const biasForRes = this.storyline.getBias();
@@ -888,17 +1152,34 @@ export class ETHOrderFlowBot {
         if (!chain.rejected) chain.addGate("confluence", GateResult.SKIP, "optional");
         else chain.addGate("confluence", GateResult.SKIP, "upstream");
 
-        // Gate 11: FVG origin
-        if (!chain.rejected) {
-            if (inp.fvgOrigin !== undefined) chain.addGate("fvg_origin", GateResult.PASS, "", `origin=${inp.fvgOrigin.toFixed(2)}`);
-            else chain.addGate("fvg_origin", GateResult.REJECT, "no FVG origin");
-        } else chain.addGate("fvg_origin", GateResult.SKIP, "upstream");
+        // Gate 11: FVG (internal detector + fallback to external)
+        let fvgOriginPrice: number | null = null;
+        if (!chain.rejected && trapDir) {
+            const confirmedFvg = this.fvg.getConfirmedFVG(trapDir);
+            const retestedFvg = this.fvg.getRestestedFVG(trapDir);
+            const anyFvg = this.fvg.getAnyFVG(trapDir);
+            if (confirmedFvg) {
+                fvgOriginPrice = trapDir === Direction.LONG ? confirmedFvg.lower : confirmedFvg.upper;
+                chain.addGate("fvg_confirmed", GateResult.PASS, "", `confirmed ${confirmedFvg.lower.toFixed(1)}-${confirmedFvg.upper.toFixed(1)}`);
+            } else if (retestedFvg) {
+                fvgOriginPrice = trapDir === Direction.LONG ? retestedFvg.lower : retestedFvg.upper;
+                chain.addGate("fvg_confirmed", GateResult.PASS, "", `retested ${retestedFvg.lower.toFixed(1)}-${retestedFvg.upper.toFixed(1)}`);
+            } else if (anyFvg) {
+                fvgOriginPrice = trapDir === Direction.LONG ? anyFvg.lower : anyFvg.upper;
+                chain.addGate("fvg_confirmed", GateResult.PASS, "", `active ${anyFvg.lower.toFixed(1)}-${anyFvg.upper.toFixed(1)}`);
+            } else if (inp.fvgOrigin !== undefined) {
+                fvgOriginPrice = inp.fvgOrigin;
+                chain.addGate("fvg_confirmed", GateResult.PASS, "", `external=${inp.fvgOrigin.toFixed(1)}`);
+            } else {
+                chain.addGate("fvg_confirmed", GateResult.REJECT, this.fvg.diagnose(trapDir));
+            }
+        } else chain.addGate("fvg_confirmed", GateResult.SKIP, "upstream");
 
         // Gate 12: Position size
         let direction = trapDir; let dynLeverage = 0; let stopPrice = 0; let size = 0;
-        if (!chain.rejected && direction && inp.fvgOrigin !== undefined) {
+        if (!chain.rejected && direction && fvgOriginPrice !== null) {
             dynLeverage = this.atr.maxLeverage(close, StopLossEngine.MAX_RISK_PCT, StopLossEngine.SL_ATR_MULT, ETHOrderFlowBot.LEVERAGE_HARD_CAP);
-            stopPrice = this.stopLoss.computeStopPrice(close, direction, inp.fvgOrigin);
+            stopPrice = this.stopLoss.computeStopPrice(close, direction, fvgOriginPrice);
             size = this.stopLoss.computePositionSize(close, stopPrice, dynLeverage, this.coldStart.sizeScale);
             if (size > 0 || this.coldStart.isPaper) chain.addGate("position_size", GateResult.PASS, "", `size=${size.toFixed(4)},lev=${dynLeverage.toFixed(1)}x`);
             else chain.addGate("position_size", GateResult.REJECT, "size<=0");
@@ -911,14 +1192,20 @@ export class ETHOrderFlowBot {
             if (rej) action = `BLOCKED: ${rej.gateName} → ${rej.reason}`;
         } else if (direction) {
             const isPaper = this.coldStart.isPaper;
+            const tpRatio = 2.0;
+            const tpPrice = this.stopLoss.computeTP(close, stopPrice, direction, tpRatio);
             this.activeTrade = {
                 entryPrice: close, direction, entryTime: now, stopLoss: stopPrice,
                 size: isPaper ? 0 : size, leverageUsed: dynLeverage, isPaper,
                 windowName: this.timeGuard.activeWindowName(now),
+                takeProfit: tpPrice, tpRatio,
+                initialStop: stopPrice, bestPrice: close,
+                trailingActive: false, stopMovedToBreakeven: false,
             };
             this.dailyTrades++;
             action = `${isPaper ? "[PAPER] " : ""}ENTRY: ${direction} @ ${close.toFixed(2)} | ` +
-                `SL=${stopPrice.toFixed(2)} | Size=${size.toFixed(4)} | Lev=${dynLeverage.toFixed(1)}x | ` +
+                `SL=${stopPrice.toFixed(2)} | TP=${tpPrice.toFixed(2)} (${tpRatio.toFixed(0)}:1) | ` +
+                `Size=${size.toFixed(4)} | Lev=${dynLeverage.toFixed(1)}x | ` +
                 `Tier=${this.stopLoss.getCurrentTier().name} | Phase=${this.coldStart.phase} | Vol=${this.atr.regime}`;
         }
 
