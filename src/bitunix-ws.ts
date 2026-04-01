@@ -712,6 +712,7 @@ export class BitunixWSEngine {
     private ws: WebSocket | null = null;
     private running = false;
     private _connected = false;
+    private _debugCounter = 0;
     private startTime = 0;
     private msgCount = 0;
     private reconnectCount = 0;
@@ -891,6 +892,7 @@ export class BitunixWSEngine {
             // V300 订单流检测
             ...(() => {
                 const cvdData = this.eth.getCVDData();
+                if (this._debugCounter++ % 60 === 0) console.log(`[ws] CVD debug: cvd=${cvdData.cvd.toFixed(1)} slope=${cvdData.slope.toFixed(2)}`);
                 const va = this.eth.getValueArea();
                 const absorb = this.eth.getAbsorption();
                 const sweep = this.eth.getSweep();
