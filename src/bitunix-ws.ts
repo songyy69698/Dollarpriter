@@ -122,6 +122,7 @@ class SymbolTracker {
     price = 0;
     priceTs = 0;
     lastKlineOHLC: { o: number; h: number; l: number; c: number; v: number } | null = null;
+    _lastKlineVol = 0;
 
     bestAsk = 0;
     bestBid = 0;
@@ -1056,7 +1057,7 @@ export class BitunixWSEngine {
         } else if (ch === "depth5" || ch.includes("depth")) {
             tracker.handleDepth(data);
         } else if (ch.includes("kline")) {
-            // 处理 K线数据 — 实时更新 OHLC + 价格 + 合成 trade
+            // 处理 K线数据 — 实时更新 OHLC + 价格 + 合成增量 trade
             const klineList = Array.isArray(data) ? data : [data];
             for (const k of klineList) {
                 const o = +(k.o || k.open || 0);
@@ -1065,15 +1066,22 @@ export class BitunixWSEngine {
                 const c = +(k.c || k.close || 0);
                 const v = +(k.v || k.vol || k.volume || k.b || 0);
                 if (h > 0 && l > 0 && c > 0) {
+                    // 检测新K线（open 变化 = 新蜡烛）
+                    const prevO = tracker.lastKlineOHLC?.o || 0;
+                    if (o !== prevO) {
+                        tracker._lastKlineVol = 0; // 新K线重置累计
+                    }
+
                     tracker.lastKlineOHLC = { o, h, l, c, v };
                     tracker.price = c;
                     tracker.priceTs = Date.now();
 
-                    // 🔥 合成 trade → 驱动 CVD/Delta/Absorption
-                    // Bitunix market_trade 不推送数据，用 kline 方向 + 成交量推算
-                    if (v > 0 && o > 0) {
+                    // 🔥 合成 trade → 只注入增量 volume
+                    const deltaVol = v - (tracker._lastKlineVol || 0);
+                    tracker._lastKlineVol = v;
+                    if (deltaVol > 0.01 && o > 0) {
                         const side = c >= o ? "buy" : "sell";
-                        tracker.handleTrade([{ p: c, v: v, s: side }]);
+                        tracker.handleTrade([{ p: c, v: deltaVol, s: side }]);
                     }
                 }
             }
