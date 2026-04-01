@@ -937,12 +937,12 @@ export class BitunixWSEngine {
             const subscribeMsg = JSON.stringify({
                 op: "subscribe",
                 args: [
-                    { ch: "market_trade", symbol: SYMBOL },
+                    { ch: "trade", symbol: SYMBOL },
                     { ch: "depth_book15", symbol: SYMBOL },
                     { ch: "market_kline_1min", symbol: SYMBOL },
-                    { ch: "market_trade", symbol: BTC_SYMBOL },
+                    { ch: "trade", symbol: BTC_SYMBOL },
                     { ch: "depth_book15", symbol: BTC_SYMBOL },
-                    { ch: "market_trade", symbol: ETH_SYMBOL },
+                    { ch: "trade", symbol: ETH_SYMBOL },
                     { ch: "depth_book15", symbol: ETH_SYMBOL },
                     { ch: "market_kline_1min", symbol: ETH_SYMBOL },
                 ],
