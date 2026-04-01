@@ -30,6 +30,7 @@ class DollarprinterBot {
     private dailyTrades = 0;
     private dailyPnl = 0;
     private totalTrades = 0;
+    private _tickCount = 0;
     private totalPnl = 0;
     private invalidEnv = false;
 
@@ -204,6 +205,7 @@ class DollarprinterBot {
 
             const snap = this.ws.getSnapshot();
             if (snap.ethPrice <= 0) return;
+            this._tickCount++;
 
             // 从 WS 获取 VA 数据
             const vaData = (this.ws as any).eth?.getValueArea?.() || { vah: snap.ethVAH, val: snap.ethVAL, poc: snap.ethPOC };
@@ -225,6 +227,9 @@ class DollarprinterBot {
                 absorptionDetected: snap.ethAbsorption,
                 absorptionSide: snap.ethAbsorptionSide,
             };
+
+            // debug CVD 每 60 tick 输出一次
+            if (this._tickCount % 60 === 0) console.log(`[main] CVD: tickInput.cvd=${tickInput.cvd.toFixed(1)} ethCVD=${snap.ethCVD.toFixed(1)}`);
 
             // 运行 V3 tick
             const result = this.bot.tick(tickInput);
