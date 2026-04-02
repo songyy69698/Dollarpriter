@@ -499,6 +499,10 @@ export class ResonanceScorer {
     snapshots: ResonanceSnapshot[] = [];
     lastEvalTime: Date | null = null;
     current: ResonanceSnapshot | null = null;
+    // 双向评估
+    currentLong: ResonanceSnapshot | null = null;
+    currentShort: ResonanceSnapshot | null = null;
+    activeBias: Direction = Direction.NEUTRAL;
 
     // VWAP
     private vwapNum = 0; private vwapDen = 0; private lastDay = -1;
@@ -653,6 +657,32 @@ export class ResonanceScorer {
     }
 
     get isConfirmed(): boolean { return this.current?.passed ?? false; }
+
+    /** 双向评估 — 同时跑 LONG+SHORT，自动选强方向 */
+    evaluateDual(now: Date, price: number, volume: number,
+        h4Assessment: FourHourAssessment | null,
+        pocMigLong: boolean, pocMigShort: boolean,
+        absorptionDir: Direction | null,
+        va: ValueArea | null, realWalls: { price: number }[],
+        atrFast: number) {
+
+        this.currentLong = this.evaluate(now, Direction.LONG, price, volume,
+            h4Assessment, pocMigLong, Direction.LONG, absorptionDir, va, realWalls, atrFast);
+        this.currentShort = this.evaluate(now, Direction.SHORT, price, volume,
+            h4Assessment, pocMigShort, Direction.SHORT, absorptionDir, va, realWalls, atrFast);
+
+        if (this.currentLong.confirmCount > this.currentShort.confirmCount) {
+            this.activeBias = Direction.LONG;
+            this.current = this.currentLong;
+        } else if (this.currentShort.confirmCount > this.currentLong.confirmCount) {
+            this.activeBias = Direction.SHORT;
+            this.current = this.currentShort;
+        } else {
+            this.activeBias = Direction.NEUTRAL;
+            this.current = this.currentLong; // 平手存 LONG 快照供参考
+        }
+        this.lastEvalTime = now;
+    }
 }
 
 // ═══════════════════════════════════════════════
@@ -1044,15 +1074,14 @@ export class ETHOrderFlowBot {
         // ── FVG DETECTION ──
         this.fvg.feedCandle(now, open, high, low, close, volume);
 
-        // ── RESONANCE EVALUATION ──
-        const biasForRes = this.storyline.getBias();
-        if (biasForRes !== Direction.NEUTRAL && this.resonance.shouldEvaluate(now)) {
+        // ── RESONANCE EVALUATION (双向) ──
+        if (this.resonance.shouldEvaluate(now)) {
             const absDir = inp.absorptionDetected
                 ? (inp.absorptionSide === "buy" ? Direction.SHORT : Direction.LONG) : null;
-            const pocMig = this.storyline.pocIsMigrating(biasForRes);
-            const pocMigOpp = this.storyline.pocIsMigrating(biasForRes === Direction.LONG ? Direction.SHORT : Direction.LONG);
-            this.resonance.evaluate(now, biasForRes, close, volume,
-                this.fourHour.lastAssessment, pocMig, biasForRes,
+            const pocMigL = this.storyline.pocIsMigrating(Direction.LONG);
+            const pocMigS = this.storyline.pocIsMigrating(Direction.SHORT);
+            this.resonance.evaluateDual(now, close, volume,
+                this.fourHour.lastAssessment, pocMigL, pocMigS,
                 absDir, this.wsVA, [], this.atr.atrFast);
         }
 
@@ -1107,12 +1136,15 @@ export class ETHOrderFlowBot {
             else chain.addGate("exhaustion_check", GateResult.PASS);
         } else chain.addGate("exhaustion_check", GateResult.SKIP, "upstream");
 
-        // Gate 6: Resonance ≥5/7
+        // Gate 6: Resonance (双向自动选强)
         if (!chain.rejected) {
             const rs = this.resonance.current;
             if (rs) {
-                if (rs.passed) chain.addGate("resonance", GateResult.PASS, "", `${rs.confirmCount}/7`);
-                else chain.addGate("resonance", GateResult.REJECT, `only ${rs.confirmCount}/7 (need ${rs.threshold})`);
+                const lb = this.resonance.currentLong;
+                const sb = this.resonance.currentShort;
+                const detail = `${this.resonance.activeBias} L=${lb?.confirmCount ?? 0}/7 S=${sb?.confirmCount ?? 0}/7`;
+                if (rs.passed) chain.addGate("resonance", GateResult.PASS, "", detail);
+                else chain.addGate("resonance", GateResult.REJECT, `best=${rs.confirmCount}/7 (need ${rs.threshold}) ${detail}`);
             } else chain.addGate("resonance", GateResult.SKIP, "no eval yet");
         } else chain.addGate("resonance", GateResult.SKIP, "upstream");
 

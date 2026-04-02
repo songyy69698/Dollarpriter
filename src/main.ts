@@ -474,15 +474,27 @@ class DollarprinterBot {
 
     /** 共振7维详情 (对应 Python 蓝图的 resonance detail) */
     private async sendResonanceDetail() {
-        const rs = this.bot.resonance.current;
-        if (!rs) { await notifyTG("⚠️ 共振尚未评估（等待第一次15min周期）"); return; }
-        let m = `🔮 *Resonance ${rs.confirmCount}/${rs.threshold}* ${rs.passed ? "✅ PASS" : "❌ FAIL"}\n`;
-        m += `方向: ${rs.direction}\n──────────\n`;
-        for (const d of rs.dimensions) {
-            const icon = d.score === 1 ? "✅" : d.score === -1 ? "❌" : "⚪";
-            m += `${icon} \`${d.name}\`\n    ${d.detail}\n`;
+        const rl = this.bot.resonance.currentLong;
+        const rs = this.bot.resonance.currentShort;
+        if (!rl && !rs) { await notifyTG("⚠️ 共振尚未评估（等待第一次15min周期）"); return; }
+
+        const ab = this.bot.resonance.activeBias;
+        let m = `🔮 Resonance 双向观察\n──────────\n`;
+        m += `📈 LONG:  ${rl?.confirmCount ?? 0}/7 ${rl?.passed ? "✅" : "❌"}${ab === "LONG" ? " ← 活跃" : ""}\n`;
+        m += `📉 SHORT: ${rs?.confirmCount ?? 0}/7 ${rs?.passed ? "✅" : "❌"}${ab === "SHORT" ? " ← 活跃" : ""}\n`;
+        if (ab === "NEUTRAL") m += `⚖️ 平手 → NEUTRAL\n`;
+        m += `──────────\n`;
+
+        // 显示活跃方向的维度详情
+        const active = ab === "SHORT" ? rs : rl;
+        if (active) {
+            m += `📊 ${ab === "NEUTRAL" ? "LONG" : ab} 详情:\n`;
+            for (const d of active.dimensions) {
+                const icon = d.score === 1 ? "✅" : d.score === -1 ? "❌" : "⚪";
+                m += `${icon} ${d.name}\n    ${d.detail}\n`;
+            }
+            m += `──────────\nTotal: ${active.totalScore} | ${active.confirmCount}/7 confirmed`;
         }
-        m += `──────────\nTotal: ${rs.totalScore} | ${rs.confirmCount}/7 confirmed`;
         await notifyTG(m);
     }
 
