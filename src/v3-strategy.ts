@@ -686,6 +686,323 @@ export class ResonanceScorer {
 }
 
 // ═══════════════════════════════════════════════
+// ObserverScorer (8-Layer v15 — from observer_v15_validation.js)
+// ═══════════════════════════════════════════════
+
+import type { BKline, BinanceDataFetcher, FundingRecord, OIRecord, LSRecord } from "./binance-data";
+
+export interface ObserverCheck { name: string; s: "✅" | "❌" | "⚪"; d: string; }
+export interface ObserverResult { score: number; marks: ObserverCheck[]; }
+export interface ObserverSnapshot {
+    timestamp: Date;
+    longResult: ObserverResult;
+    shortResult: ObserverResult;
+    activeBias: Direction;
+    price: number;
+    fundingRate: number;
+    oiChange: number;
+    lsr: number | null;
+}
+
+// ── EMA 计算 ──
+function emaArr(arr: number[], p: number): number[] {
+    const k = 2 / (p + 1); let prev: number | null = null;
+    return arr.map((v) => { prev = prev == null ? v : v * k + prev * (1 - k); return prev; });
+}
+
+// ── GMMA 状态 (12-EMA Guppy) ──
+interface GmmaState { up: boolean; down: boolean; tangled: boolean; }
+const GMMA_SHORT_PERIODS = [3, 5, 8, 10, 12, 15];
+const GMMA_LONG_PERIODS = [30, 35, 40, 45, 50, 60];
+
+// 缓存键
+const _gmmaCache = new WeakMap<BKline[], { s: number[][]; l: number[][] }>();
+
+function gmmaState(data: BKline[], idx: number): GmmaState {
+    if (!_gmmaCache.has(data)) {
+        const cl = data.map(x => x.close);
+        _gmmaCache.set(data, {
+            s: GMMA_SHORT_PERIODS.map(p => emaArr(cl, p)),
+            l: GMMA_LONG_PERIODS.map(p => emaArr(cl, p)),
+        });
+    }
+    const g = _gmmaCache.get(data)!;
+    const sA = g.s.reduce((a, e) => a + (e[idx] ?? 0), 0) / GMMA_SHORT_PERIODS.length;
+    const lA = g.l.reduce((a, e) => a + (e[idx] ?? 0), 0) / GMMA_LONG_PERIODS.length;
+    const pS = g.s.reduce((a, e) => a + (e[Math.max(0, idx - 1)] ?? 0), 0) / GMMA_SHORT_PERIODS.length;
+    const pL = g.l.reduce((a, e) => a + (e[Math.max(0, idx - 1)] ?? 0), 0) / GMMA_LONG_PERIODS.length;
+    const sep = Math.abs(sA - lA) / Math.max(1e-9, data[idx]?.close ?? 1);
+    const exp = Math.abs(sA - lA) > Math.abs(pS - pL);
+    return { up: sA > lA && exp, down: sA < lA && exp, tangled: sep < 0.0025 };
+}
+
+// ── Volume Profile POC ──
+function calcPOC(data: BKline[], idx: number, bars = 18, bins = 24): number {
+    const win = data.slice(Math.max(0, idx - bars + 1), idx + 1);
+    if (!win.length) return data[idx]?.close ?? 0;
+    let lo = Math.min(...win.map(x => x.low)), hi = Math.max(...win.map(x => x.high));
+    if (!(hi > lo)) return data[idx].close;
+    const step = (hi - lo) / bins, bkt = Array(bins).fill(0);
+    for (const k of win) {
+        const bi = Math.max(0, Math.min(bins - 1, Math.floor(((k.high + k.low + k.close) / 3 - lo) / step)));
+        bkt[bi] += k.volume;
+    }
+    let best = 0;
+    for (let i = 1; i < bins; i++) if (bkt[i] > bkt[best]) best = i;
+    return lo + step * (best + 0.5);
+}
+
+// ── Volume Average ──
+function volAvg(data: BKline[], idx: number, n = 20): number {
+    const sl = data.slice(Math.max(0, idx - n), idx);
+    return sl.length ? sl.reduce((a, b) => a + b.volume, 0) / sl.length : (data[idx]?.volume ?? 1);
+}
+
+// ── CVD Array ──
+function cvdArr(data: BKline[]): number[] {
+    let c = 0;
+    return data.map(x => { c += x.delta; return c; });
+}
+
+// ── Sweep Signal (Liquidity Sweep) ──
+export interface SweepResult { dir: "LONG" | "SHORT"; strength: number; level: number; }
+
+function sweepSignal(data: BKline[], idx: number): SweepResult | null {
+    const s = Math.max(2, idx - 30);
+    const highs: number[] = [], lows: number[] = [];
+    for (let i = s; i < idx - 2; i++) {
+        if (i < 1 || i + 1 >= data.length) continue;
+        if (data[i].high >= data[i - 1].high && data[i].high >= data[i + 1].high) highs.push(data[i].high);
+        if (data[i].low <= data[i - 1].low && data[i].low <= data[i + 1].low) lows.push(data[i].low);
+    }
+    function cluster(arr: number[]): { p: number; n: number }[] {
+        const out: { p: number; n: number }[] = [];
+        for (const p of arr) {
+            const h = out.find(x => Math.abs(x.p - p) / p <= 0.0015);
+            if (!h) out.push({ p, n: 1 });
+            else { h.p = (h.p * h.n + p) / (h.n + 1); h.n++; }
+        }
+        return out.sort((a, b) => b.n - a.n);
+    }
+    const k = data[idx];
+    if (!k) return null;
+    const top = cluster(highs).find(x => x.n >= 2 && k.high > x.p && k.close < x.p);
+    const bot = cluster(lows).find(x => x.n >= 2 && k.low < x.p && k.close > x.p);
+    if (top) return { dir: "SHORT", strength: top.n, level: top.p };
+    if (bot) return { dir: "LONG", strength: bot.n, level: bot.p };
+    return null;
+}
+
+// ── Absorption (taker ratio) ──
+interface AbsorptionResult { bull: boolean; bear: boolean; }
+
+function calcAbsorption(data: BKline[], idx: number): AbsorptionResult {
+    const k = data[idx];
+    if (!k) return { bull: false, bear: false };
+    const br = k.takerBuyBase / Math.max(1e-9, k.volume);
+    const sr = k.takerSellBase / Math.max(1e-9, k.volume);
+    const body = (k.close - k.open) / Math.max(1e-9, k.open);
+    return {
+        bull: sr > 0.6 && body > -0.0008 && k.close >= k.open,
+        bear: br > 0.6 && body < 0.0008 && k.close <= k.open,
+    };
+}
+
+// ── Delta Divergence (6-bar) ──
+interface DeltaDivResult { bull: boolean; bear: boolean; }
+
+function deltaDiv(data: BKline[], idx: number): DeltaDivResult {
+    if (idx < 6) return { bull: false, bear: false };
+    const prev = data.slice(idx - 6, idx), k = data[idx];
+    if (!k) return { bull: false, bear: false };
+    const pLow = Math.min(...prev.map(x => x.low)), pHigh = Math.max(...prev.map(x => x.high));
+    const avgD = prev.reduce((a, b) => a + b.delta, 0) / prev.length;
+    return {
+        bull: k.low <= pLow * 1.001 && k.delta > 0 && k.delta > Math.abs(avgD) * 0.35,
+        bear: k.high >= pHigh * 0.999 && k.delta < 0 && Math.abs(k.delta) > Math.abs(avgD) * 0.35,
+    };
+}
+
+// ── Nearest helper ──
+function nearest<T extends { time: number }>(rows: T[], t: number): T | null {
+    let best: T | null = null;
+    for (const r of rows) { if (r.time <= t) best = r; else break; }
+    return best;
+}
+
+// ── Helper constructors for check marks ──
+function okMark(name: string, d: string): ObserverCheck { return { name, s: "✅", d }; }
+function badMark(name: string, d: string): ObserverCheck { return { name, s: "❌", d }; }
+function neuMark(name: string, d: string): ObserverCheck { return { name, s: "⚪", d }; }
+
+// ── Score one side (LONG or SHORT) — exact v15 logic ──
+function scoreSide(args: {
+    side: "LONG" | "SHORT"; envBias: number;
+    g30: GmmaState; g5: GmmaState; ve: number;
+    sweep: SweepResult | null; dd: DeltaDivResult; abs: AbsorptionResult;
+    cvd3: number; cvd8: number;
+    ls: LSRecord | null; fr: number; oiCh: number; k: BKline;
+}): ObserverResult {
+    const { side, envBias, g30, g5, ve, sweep, dd, abs, cvd3, cvd8, ls, fr, oiCh, k } = args;
+    let score = 0;
+    const marks: ObserverCheck[] = [];
+    const cLong = ls && ls.longShortRatio > 1.45 && fr >= 0;
+    const cShort = ls && ls.longShortRatio < 0.75 && fr <= 0;
+    const liqL = oiCh < -0.15 && k.close < k.open;
+    const liqS = oiCh < -0.15 && k.close > k.open;
+    const lsr = ls?.longShortRatio?.toFixed(2) ?? "n/a";
+
+    // 1. LIQUIDITY
+    if (sweep && sweep.dir === side) {
+        score += 2; if (sweep.strength >= 3) score += 1;
+        marks.push(okMark("LIQUIDITY", `${side} sweep str=${sweep.strength}`));
+    } else marks.push(neuMark("LIQUIDITY", "no sweep"));
+
+    // 2. VOLUME
+    if (ve > 1.8) { score += 1; marks.push(okMark("VOLUME", `${ve.toFixed(1)}x`)); }
+    else if (ve < 0.8) { score -= 1; marks.push(badMark("VOLUME", `${ve.toFixed(1)}x weak`)); }
+    else marks.push(neuMark("VOLUME", `${ve.toFixed(1)}x`));
+
+    if (side === "LONG") {
+        // 3. 4H
+        if (envBias === 1) { score += 1; marks.push(okMark("4H_GMMA+POC", "bull confirmed")); }
+        else if (envBias === 0) marks.push(badMark("4H_GMMA+POC", "neutral"));
+        else marks.push(neuMark("4H_GMMA+POC", "bear weight vs long"));
+        // 4. 30M
+        if (g30.up) { score += 1; marks.push(okMark("30M_GMMA", "aligned up")); }
+        else marks.push(badMark("30M_GMMA", "not up"));
+        // 5. 5M
+        if (g5.up) { score += 1; marks.push(okMark("5M_GMMA", "trigger up")); }
+        else marks.push(neuMark("5M_GMMA", "not triggered"));
+        // 6. DELTA
+        if (dd.bull) { score += 2; marks.push(okMark("DELTA", "deltaDivBull")); }
+        else marks.push(neuMark("DELTA", `d=${k.delta.toFixed(0)}`));
+        // 7. ABSORPTION
+        if (abs.bull) { score += 1; marks.push(okMark("ABSORPTION", "bull")); }
+        else marks.push(neuMark("ABSORPTION", "none"));
+        // 8. CVD
+        if (cvd3 > 0 && cvd8 > 0) { score += 1; marks.push(okMark("CVD", `c3=${cvd3.toFixed(0)} c8=${cvd8.toFixed(0)}`)); }
+        else marks.push(neuMark("CVD", `c3=${cvd3.toFixed(0)}`));
+        // 9. CFD
+        if (cShort || liqL) { score += 1; marks.push(okMark("CFD", `lsr=${lsr} oi=${oiCh.toFixed(3)}%`)); }
+        else marks.push(neuMark("CFD", `lsr=${lsr}`));
+    } else {
+        if (envBias === -1) { score += 1; marks.push(okMark("4H_GMMA+POC", "bear confirmed")); }
+        else if (envBias === 0) marks.push(badMark("4H_GMMA+POC", "neutral"));
+        else marks.push(neuMark("4H_GMMA+POC", "bull weight vs short"));
+        if (g30.down) { score += 1; marks.push(okMark("30M_GMMA", "aligned down")); }
+        else marks.push(badMark("30M_GMMA", "not down"));
+        if (g5.down) { score += 1; marks.push(okMark("5M_GMMA", "trigger down")); }
+        else marks.push(neuMark("5M_GMMA", "not triggered"));
+        if (dd.bear) { score += 2; marks.push(okMark("DELTA", "deltaDivBear")); }
+        else marks.push(neuMark("DELTA", `d=${k.delta.toFixed(0)}`));
+        if (abs.bear) { score += 1; marks.push(okMark("ABSORPTION", "bear")); }
+        else marks.push(neuMark("ABSORPTION", "none"));
+        if (cvd3 < 0 && cvd8 < 0) { score += 1; marks.push(okMark("CVD", `c3=${cvd3.toFixed(0)} c8=${cvd8.toFixed(0)}`)); }
+        else marks.push(neuMark("CVD", `c3=${cvd3.toFixed(0)}`));
+        if (cLong || liqS) { score += 1; marks.push(okMark("CFD", `lsr=${lsr} oi=${oiCh.toFixed(3)}%`)); }
+        else marks.push(neuMark("CFD", `lsr=${lsr}`));
+    }
+
+    // SLIPPAGE warning
+    const slip = ve > 3.0 ? "HIGH" : ve > 1.8 ? "MEDIUM" : "LOW";
+    marks.push(slip === "HIGH" ? badMark("SLIPPAGE", slip) : slip === "MEDIUM" ? neuMark("SLIPPAGE", slip) : okMark("SLIPPAGE", slip));
+    return { score, marks };
+}
+
+// ═══════════════════════════════════════════════
+// ObserverScorer — 主类
+// ═══════════════════════════════════════════════
+
+export class ObserverScorer {
+    static readonly SCORE_THRESHOLD = 4;
+    static readonly EVAL_INTERVAL_MS = 60_000; // 每分钟评估一次
+
+    current: ObserverSnapshot | null = null;
+    activeBias: Direction = Direction.NEUTRAL;
+    lastEvalTime: Date | null = null;
+
+    // 引用 Binance 数据源
+    private fetcher: BinanceDataFetcher | null = null;
+
+    setFetcher(f: BinanceDataFetcher) { this.fetcher = f; }
+
+    shouldEvaluate(now: Date): boolean {
+        if (!this.lastEvalTime) return true;
+        return now.getTime() - this.lastEvalTime.getTime() >= ObserverScorer.EVAL_INTERVAL_MS;
+    }
+
+    /** 双向评估 — 与 observer_v15 完全一致 */
+    evaluate(now: Date): ObserverSnapshot | null {
+        const f = this.fetcher;
+        if (!f || !f.ready || !f.k5.length) return null;
+
+        const k5 = f.k5, k30 = f.k30, k4h = f.k4h;
+        const li = k5.length - 1, l30 = k30.length - 1, l4 = k4h.length - 1;
+        if (li < 10 || l30 < 0 || l4 < 0) return null;
+
+        const latest = k5[li];
+        const CVD = cvdArr(k5);
+
+        // 清除 GMMA 缓存 (数据变了)
+        _gmmaCache.delete(k4h); _gmmaCache.delete(k30); _gmmaCache.delete(k5);
+
+        // 4H 环境偏差: GMMA up + price > POC
+        const g4 = gmmaState(k4h, l4), p4 = calcPOC(k4h, l4);
+        const envBias = g4.up && k4h[l4].close > p4 && !g4.tangled ? 1
+            : g4.down && k4h[l4].close < p4 && !g4.tangled ? -1 : 0;
+
+        // 30M + 5M GMMA
+        const g30 = gmmaState(k30, l30), g5 = gmmaState(k5, li);
+
+        // 其他指标
+        const ve = latest.volume / Math.max(1e-9, volAvg(k5, li));
+        const sw = sweepSignal(k5, li);
+        const dd = deltaDiv(k5, li);
+        const ab = calcAbsorption(k5, li);
+        const cvd3 = CVD[li] - CVD[Math.max(0, li - 3)];
+        const cvd8 = CVD[li] - CVD[Math.max(0, li - 8)];
+        const fr = f.latestFunding();
+        const oiCh = f.latestOIChange();
+        const ls = f.latestLS();
+
+        const args = { g30, g5, ve, sweep: sw, dd, abs: ab, cvd3, cvd8, ls, fr, oiCh, k: latest, envBias };
+        const L = scoreSide({ side: "LONG", ...args });
+        const S = scoreSide({ side: "SHORT", ...args });
+        const active = L.score === S.score ? Direction.NEUTRAL : L.score > S.score ? Direction.LONG : Direction.SHORT;
+
+        this.activeBias = active;
+        this.lastEvalTime = now;
+        this.current = {
+            timestamp: now,
+            longResult: L, shortResult: S,
+            activeBias: active,
+            price: latest.close,
+            fundingRate: fr, oiChange: oiCh,
+            lsr: ls?.longShortRatio ?? null,
+        };
+        return this.current;
+    }
+
+    /** 获取当前活跃方向的得分 */
+    get activeScore(): number {
+        if (!this.current) return 0;
+        if (this.activeBias === Direction.LONG) return this.current.longResult.score;
+        if (this.activeBias === Direction.SHORT) return this.current.shortResult.score;
+        return Math.max(this.current.longResult.score, this.current.shortResult.score);
+    }
+
+    /** 是否达到入場阈值 */
+    get isConfirmed(): boolean { return this.activeScore >= ObserverScorer.SCORE_THRESHOLD; }
+
+    /** 获取活跃方向的 sweep 信号 */
+    get activeSweep(): SweepResult | null {
+        if (!this.fetcher?.ready || !this.fetcher.k5.length) return null;
+        return sweepSignal(this.fetcher.k5, this.fetcher.k5.length - 1);
+    }
+}
+
+// ═══════════════════════════════════════════════
 // FVGDetector (Fair Value Gap)
 // ═══════════════════════════════════════════════
 
@@ -987,6 +1304,7 @@ export class ETHOrderFlowBot {
     storyline = new StorylineEngine();
     fourHour: FourHourObserver;
     resonance = new ResonanceScorer();
+    observer = new ObserverScorer();
     stopLoss: StopLossEngine;
     kelly = new KellyRiskManager();
     timeGuard: TimeGuardEngine;
@@ -1068,21 +1386,15 @@ export class ETHOrderFlowBot {
         // ── 4H OBSERVER ──
         const h4Result = this.fourHour.update(now, high, low, close, volume);
 
-        // ── RESONANCE DATA ──
+        // ── RESONANCE DATA (legacy) ──
         this.resonance.updateData(now, close, volume, cvd);
 
         // ── FVG DETECTION ──
         this.fvg.feedCandle(now, open, high, low, close, volume);
 
-        // ── RESONANCE EVALUATION (双向) ──
-        if (this.resonance.shouldEvaluate(now)) {
-            const absDir = inp.absorptionDetected
-                ? (inp.absorptionSide === "buy" ? Direction.SHORT : Direction.LONG) : null;
-            const pocMigL = this.storyline.pocIsMigrating(Direction.LONG);
-            const pocMigS = this.storyline.pocIsMigrating(Direction.SHORT);
-            this.resonance.evaluateDual(now, close, volume,
-                this.fourHour.lastAssessment, pocMigL, pocMigS,
-                absDir, this.wsVA, [], this.atr.atrFast);
+        // ── OBSERVER v15 EVALUATION (每分钟) ──
+        if (this.observer.shouldEvaluate(now)) {
+            this.observer.evaluate(now);
         }
 
         // ── BUILD GATE CHAIN ──
@@ -1136,48 +1448,50 @@ export class ETHOrderFlowBot {
             else chain.addGate("exhaustion_check", GateResult.PASS);
         } else chain.addGate("exhaustion_check", GateResult.SKIP, "upstream");
 
-        // Gate 6: Resonance (双向自动选强)
+        // Gate 6: Observer v15 Score (8-Layer dual)
+        let entryDir: Direction | null = null;
         if (!chain.rejected) {
-            const rs = this.resonance.current;
-            if (rs) {
-                const lb = this.resonance.currentLong;
-                const sb = this.resonance.currentShort;
-                const detail = `${this.resonance.activeBias} L=${lb?.confirmCount ?? 0}/7 S=${sb?.confirmCount ?? 0}/7`;
-                if (rs.passed) chain.addGate("resonance", GateResult.PASS, "", detail);
-                else chain.addGate("resonance", GateResult.REJECT, `best=${rs.confirmCount}/7 (need ${rs.threshold}) ${detail}`);
-            } else chain.addGate("resonance", GateResult.SKIP, "no eval yet");
-        } else chain.addGate("resonance", GateResult.SKIP, "upstream");
+            const obs = this.observer.current;
+            if (obs) {
+                const lScore = obs.longResult.score, sScore = obs.shortResult.score;
+                const detail = `${this.observer.activeBias} L=${lScore}/8 S=${sScore}/8 FR=${obs.fundingRate.toFixed(5)}`;
+                if (this.observer.isConfirmed && this.observer.activeBias !== Direction.NEUTRAL) {
+                    entryDir = this.observer.activeBias;
+                    chain.addGate("observer_score", GateResult.PASS, "", detail);
+                } else {
+                    chain.addGate("observer_score", GateResult.REJECT, `best=${this.observer.activeScore}/8 (need ${ObserverScorer.SCORE_THRESHOLD}) ${detail}`);
+                }
+            } else chain.addGate("observer_score", GateResult.SKIP, "no eval yet (waiting for Binance data)");
+        } else chain.addGate("observer_score", GateResult.SKIP, "upstream");
 
-        // Gate 7: VA exists
-        const va = this.wsVA;
-        if (!chain.rejected) {
-            if (va) chain.addGate("fcr_va_exists", GateResult.PASS, "", `VAH=${va.vah.toFixed(1)},VAL=${va.val.toFixed(1)}`);
-            else chain.addGate("fcr_va_exists", GateResult.REJECT, "no VA");
-        } else chain.addGate("fcr_va_exists", GateResult.SKIP, "upstream");
-
-        // Gate 8: Trap reversal
-        let trapDir: Direction | null = null;
-        if (!chain.rejected && va) {
-            const maxPierce = this.atr.atrFast * 0.5;
-            if (low < va.val && close > va.val && va.val - low < maxPierce) trapDir = Direction.LONG;
-            else if (high > va.vah && close < va.vah && high - va.vah < maxPierce) trapDir = Direction.SHORT;
-
-            if (trapDir) chain.addGate("trap_reversal", GateResult.PASS, "", `dir=${trapDir}`);
-            else {
-                // Diagnose
-                const pierceBelow = Math.max(0, va.val - low), pierceAbove = Math.max(0, high - va.vah);
-                let reason = "no VA edge pierce";
-                if (pierceBelow > maxPierce || pierceAbove > maxPierce) reason = `pierce too deep`;
-                else if (pierceBelow > 0 && close < va.val) reason = "close below VAL";
-                else if (pierceAbove > 0 && close > va.vah) reason = "close above VAH";
-                chain.addGate("trap_reversal", GateResult.REJECT, reason);
+        // Gate 7: Liquidity Sweep (replaces trap reversal)
+        let sweepDir: Direction | null = null;
+        if (!chain.rejected && entryDir) {
+            const sw = this.observer.activeSweep;
+            if (sw) {
+                sweepDir = sw.dir === "LONG" ? Direction.LONG : Direction.SHORT;
+                chain.addGate("liquidity_sweep", GateResult.PASS, "", `${sw.dir} str=${sw.strength} level=${sw.level.toFixed(1)}`);
+            } else {
+                // Sweep 是加分项但不是死门槛 — 如果 observer score >= 5 可以跳过
+                if (this.observer.activeScore >= 5) {
+                    sweepDir = entryDir;
+                    chain.addGate("liquidity_sweep", GateResult.PASS, "", `no sweep but score≥5, using observer dir=${entryDir}`);
+                } else {
+                    chain.addGate("liquidity_sweep", GateResult.REJECT, "no sweep signal and score<5");
+                }
             }
-        } else chain.addGate("trap_reversal", GateResult.SKIP, "upstream");
+        } else chain.addGate("liquidity_sweep", GateResult.SKIP, "upstream");
 
-        // Gate 9: Direction match
-        if (!chain.rejected && trapDir) {
-            if (trapDir === bias) chain.addGate("direction_match", GateResult.PASS, "", `trap=${trapDir},bias=${bias}`);
-            else chain.addGate("direction_match", GateResult.REJECT, `trap=${trapDir} vs bias=${bias}`);
+        // Gate 8: Direction consistency (sweep vs observer)
+        let trapDir = sweepDir;
+        if (!chain.rejected && trapDir && entryDir) {
+            if (trapDir === entryDir) {
+                chain.addGate("direction_match", GateResult.PASS, "", `sweep=${trapDir},observer=${entryDir}`);
+            } else {
+                // Sweep 方向和 observer 不一致 → 用 observer 的
+                trapDir = entryDir;
+                chain.addGate("direction_match", GateResult.PASS, "", `override: sweep=${sweepDir}→observer=${entryDir}`);
+            }
         } else chain.addGate("direction_match", GateResult.SKIP, "upstream");
 
         // Gate 10: Confluence (optional)
@@ -1280,6 +1594,7 @@ export class ETHOrderFlowBot {
             h4Bias: this.storyline.intradayBias,
             h4Conf: h4 ? h4.confidence.toFixed(2) : "N/A",
             resonance: this.resonance.current ? `${this.resonance.current.confirmCount}/7` : "N/A",
+            observer: this.observer.current ? `L=${this.observer.current.longResult.score}/8 S=${this.observer.current.shortResult.score}/8 → ${this.observer.activeBias}` : "N/A",
             lastGates: last ? `${passCount(last)}/${last.gates.length}` : "N/A",
             lastReject: rej ? `${rej.gateName}: ${rej.reason}` : "none",
         };
@@ -1293,7 +1608,7 @@ export class ETHOrderFlowBot {
             `📊 ATR: ${s.atrFast}/${s.atrSlow} | ${s.volRegime}\n` +
             `📏 Lev: ${s.dynLeverage} | Tier: ${s.tier}\n` +
             `📈 Bias: ${s.bias} | 4H: ${s.h4Bias}\n` +
-            `🔮 Resonance: ${s.resonance}\n` +
+            `🔮 Observer: ${s.observer}\n` +
             `🔗 Gates: ${s.lastGates} | Reject: ${s.lastReject}\n` +
             `📊 Kelly: ${s.kelly} | Phase: ${s.phase}\n` +
             `📋 Signals: ${s.totalSignals} | Wins: ${this.kelly.dailyConsecWins}`;

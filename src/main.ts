@@ -10,6 +10,7 @@ import { BitunixWSEngine } from "./bitunix-ws";
 import { BitunixExecutor } from "./executor";
 import { notifyTG, pollTGCommands, initTG } from "./telegram";
 import { ETHOrderFlowBot, Direction, type TickInput } from "./v3-strategy";
+import { BinanceDataFetcher } from "./binance-data";
 import {
     LEVERAGE, MAX_DAILY_TRADES, MAX_DAILY_LOSS,
     ETH_SYMBOL, SYMBOL_PRECISION, BINANCE_BASE,
@@ -100,6 +101,9 @@ class DollarprinterBot {
         // 初始化 MTF 方向 (会从 K线数据推断)
         await this.initMTFBias();
 
+        // 初始化 Binance 数据获取器 (微观数据源 for Observer v15)
+        await this.initBinanceFetcher();
+
         this.strategyLoop();
         this.positionLoop();
         this.candleLoop();
@@ -108,6 +112,22 @@ class DollarprinterBot {
         setInterval(() => this.dailyReset(), 60_000);
 
         log("🟢 V3 Order Flow Bot 就绪 — 发 1 激活");
+    }
+
+    private binanceFetcher = new BinanceDataFetcher();
+
+    private async initBinanceFetcher() {
+        try {
+            log("📊 初始化 Binance 数据源 (Observer v15)...");
+            await this.binanceFetcher.init();
+            this.bot.observer.setFetcher(this.binanceFetcher);
+            this.binanceFetcher.startPolling();
+            // 立即执行一次评估
+            this.bot.observer.evaluate(new Date());
+            log(`📊 Observer v15 就绪: ${this.bot.observer.activeBias}`);
+        } catch (e: any) {
+            log(`⚠️ Binance 数据源初始化失败: ${e.message}`);
+        }
     }
 
     private async waitForWS() {
@@ -472,29 +492,26 @@ class DollarprinterBot {
         await notifyTG(m);
     }
 
-    /** 共振7维详情 (对应 Python 蓝图的 resonance detail) */
+    /** Observer v15 8层详情 */
     private async sendResonanceDetail() {
-        const rl = this.bot.resonance.currentLong;
-        const rs = this.bot.resonance.currentShort;
-        if (!rl && !rs) { await notifyTG("⚠️ 共振尚未评估（等待第一次15min周期）"); return; }
+        const obs = this.bot.observer.current;
+        if (!obs) { await notifyTG("⚠️ Observer 尚未评估（等待 Binance 数据）"); return; }
 
-        const ab = this.bot.resonance.activeBias;
-        let m = `🔮 Resonance 双向观察\n──────────\n`;
-        m += `📈 LONG:  ${rl?.confirmCount ?? 0}/7 ${rl?.passed ? "✅" : "❌"}${ab === "LONG" ? " ← 活跃" : ""}\n`;
-        m += `📉 SHORT: ${rs?.confirmCount ?? 0}/7 ${rs?.passed ? "✅" : "❌"}${ab === "SHORT" ? " ← 活跃" : ""}\n`;
+        const ab = this.bot.observer.activeBias;
+        let m = `🔮 8-Layer Dual Observation [v15]\n──────────\n`;
+        m += `📈 LONG: ${obs.longResult.score}/8 ${ab === "LONG" ? "← ACTIVE" : ""}\n`;
+        m += `📉 SHORT: ${obs.shortResult.score}/8 ${ab === "SHORT" ? "← ACTIVE" : ""}\n`;
         if (ab === "NEUTRAL") m += `⚖️ 平手 → NEUTRAL\n`;
         m += `──────────\n`;
+        m += `Price=${obs.price.toFixed(2)} FR=${obs.fundingRate.toFixed(5)} OIΔ=${obs.oiChange.toFixed(3)}% L/S=${obs.lsr?.toFixed(2) ?? "n/a"}\n\n`;
 
-        // 显示活跃方向的维度详情
-        const active = ab === "SHORT" ? rs : rl;
-        if (active) {
-            m += `📊 ${ab === "NEUTRAL" ? "LONG" : ab} 详情:\n`;
-            for (const d of active.dimensions) {
-                const icon = d.score === 1 ? "✅" : d.score === -1 ? "❌" : "⚪";
-                m += `${icon} ${d.name}\n    ${d.detail}\n`;
-            }
-            m += `──────────\nTotal: ${active.totalScore} | ${active.confirmCount}/7 confirmed`;
+        const active = ab === "SHORT" ? obs.shortResult : obs.longResult;
+        const label = ab === "NEUTRAL" ? "LONG" : ab;
+        m += `📊 ${label} 详情:\n`;
+        for (const c of active.marks) {
+            m += `${c.s} ${c.name}\n    ${c.d}\n`;
         }
+        m += `──────────\nDecision: ${ab} | LONG ${obs.longResult.score}/8 | SHORT ${obs.shortResult.score}/8`;
         await notifyTG(m);
     }
 
