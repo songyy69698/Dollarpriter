@@ -65,7 +65,7 @@ class DollarprinterBot {
         await initTG();
 
         log("════════════════════════════════════════════");
-        log("  🧠 V3 Order Flow Bot");
+        log("  🧠 Observer v15 Bot");
         log(`  📊 11-Gate Chain | 4H Observer | Resonance 5/7`);
         log(`  🛡️ Trap Reversal + FVG SL | ${LEVERAGE}x`);
         log("════════════════════════════════════════════");
@@ -79,7 +79,7 @@ class DollarprinterBot {
         log(`  💰 余额: $${bal.toFixed(2)}`);
 
         await notifyTG(
-            `🧠 *V3 Order Flow Bot 启动*\n` +
+            `🧠 *Observer v15 Bot 启动*\n` +
             `💰 $${bal.toFixed(2)} | ${LEVERAGE}x\n` +
             `📊 11-Gate Chain\n` +
             `🔮 4H Observer + Resonance 5/7\n` +
@@ -111,7 +111,7 @@ class DollarprinterBot {
         setInterval(() => this.hourlyReport(), 3600_000);
         setInterval(() => this.dailyReset(), 60_000);
 
-        log("🟢 V3 Order Flow Bot 就绪 — 发 1 激活");
+        log("🟢 Observer v15 Bot 就绪 — 发 1 激活");
     }
 
     private binanceFetcher = new BinanceDataFetcher();
@@ -393,8 +393,8 @@ class DollarprinterBot {
             polling = true;
             try {
                 const cmdHandlers: Record<string, () => Promise<void>> = {
-                    "1": async () => { this.paused = false; await notifyTG(`✅ *V3 Order Flow Bot 激活*`); },
-                    "/start": async () => { this.paused = false; await notifyTG(`✅ *V3 Order Flow Bot 激活*`); },
+                    "1": async () => { this.paused = false; await notifyTG(`✅ *Observer v15 Bot 激活*`); },
+                    "/start": async () => { this.paused = false; await notifyTG(`✅ *Observer v15 Bot 激活*`); },
                     "0": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                     "/stop": async () => { this.paused = true; await notifyTG("🔴 *暂停*"); },
                     "y": async () => {
@@ -571,7 +571,7 @@ Bun.serve({
     port,
     hostname: "0.0.0.0",
     fetch(_req: Request) {
-        return new Response("V3 Order Flow Bot is Alive! 🧠💚", { status: 200 });
+        return new Response("Observer v15 Bot is Alive! 🧠💚", { status: 200 });
     },
 });
 log(`🌐 Health check on 0.0.0.0:${port}`);

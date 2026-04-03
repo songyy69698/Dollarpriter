@@ -1603,7 +1603,7 @@ export class ETHOrderFlowBot {
     /** Telegram 格式状态 */
     statusTG(): string {
         const s = this.status();
-        return `🧠 V3 Order Flow Bot\n` +
+        return `🧠 Observer v15 Bot\n` +
             `──────────\n` +
             `📊 ATR: ${s.atrFast}/${s.atrSlow} | ${s.volRegime}\n` +
             `📏 Lev: ${s.dynLeverage} | Tier: ${s.tier}\n` +
