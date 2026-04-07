@@ -235,30 +235,42 @@ export class StopLossEngine {
     recordResult(win: boolean) { this.consecutiveLosses = win ? 0 : this.consecutiveLosses + 1; }
 
     computeStopPrice(entry: number, dir: Direction, fvgOrigin?: number): number {
-        const buf = this.atr.atrFast * 0.15;
+        // 150x 极微止损 (Micro SL)
+        const maxSlPct = 0.0030; // 0.3% (爆仓线为 0.6% 左右)
+        const buf = this.atr.atrFast * 0.10; // 收点过紧，防止滑点
+        let slPrice = dir === Direction.LONG ? entry - buf : entry + buf;
+
         if (fvgOrigin !== undefined) {
-            return dir === Direction.LONG ? fvgOrigin - buf : fvgOrigin + buf;
+            slPrice = dir === Direction.LONG ? fvgOrigin - buf : fvgOrigin + buf;
+        } else {
+            const sd = this.atr.stopDistance(StopLossEngine.SL_ATR_MULT * 0.25);
+            slPrice = dir === Direction.LONG ? entry - sd : entry + sd;
         }
-        const sd = this.atr.stopDistance(StopLossEngine.SL_ATR_MULT);
-        return dir === Direction.LONG ? entry - sd : entry + sd;
+
+        // 强行约束在 0.3% 爆仓线内
+        if (dir === Direction.LONG) {
+            return Math.max(slPrice, entry * (1 - maxSlPct));
+        } else {
+            return Math.min(slPrice, entry * (1 + maxSlPct));
+        }
     }
 
     computePositionSize(entry: number, stop: number, leverage: number, coldScale = 1.0): number {
-        const dist = Math.abs(entry - stop) / entry;
-        const eff = dist + this.slippage.p95SlippagePct;
-        if (eff === 0) return 0;
-        const notional = this.maxLossAmount() / eff;
-        return (notional / leverage) * coldScale;
+        // 子弹式分仓: 不再基于资金百分比，固定拿出 15U(近似10%)
+        const marginRisk = 15.0; // 15U 每发子弹
+        const notional = marginRisk * leverage; // 15U * 150x = 2250U 购买力
+        return notional / entry;
     }
 
     /** TP = entry + risk × rrRatio (默认 2:1) */
     computeTP(entry: number, stop: number, dir: Direction, rrRatio = 2.0): number {
         const risk = Math.abs(entry - stop);
         const reward = risk * rrRatio;
+        // 狙击模式可能使用固定点数 TP
         return dir === Direction.LONG ? entry + reward : entry - reward;
     }
 
-    /** 3 阶段移动止损: 原始 → 保本(1R) → 跟踪(ATR×0.8) */
+    /** 150x 激进保本与极度追踪 */
     updateTrailingStop(trade: ActiveTrade, currentHigh: number, currentLow: number) {
         const entry = trade.entryPrice;
         const risk = Math.abs(entry - trade.initialStop);
@@ -267,28 +279,30 @@ export class StopLossEngine {
         if (trade.direction === Direction.LONG) {
             trade.bestPrice = Math.max(trade.bestPrice, currentHigh);
             const profit = trade.bestPrice - entry;
-            // Phase 2: 保本
-            if (profit >= risk && !trade.stopMovedToBreakeven) {
-                trade.stopLoss = entry;
+            // Phase 2: 保本锁喉 (只要涨 3 块钱立刻推保本)
+            const minMoveToBE = Math.min(risk, 3.0); 
+            if (profit >= minMoveToBE && !trade.stopMovedToBreakeven) {
+                trade.stopLoss = entry + 0.5; // 保护手续费
                 trade.stopMovedToBreakeven = true;
                 trade.trailingActive = true;
             }
-            // Phase 3: 跟踪
+            // Phase 3: 激进追踪
             if (trade.trailingActive) {
-                const newStop = trade.bestPrice - this.atr.atrFast * 0.8;
+                const newStop = trade.bestPrice - this.atr.atrFast * 0.4;
                 if (newStop > trade.stopLoss) trade.stopLoss = newStop;
             }
         } else {
             if (trade.bestPrice === 0) trade.bestPrice = currentLow;
             trade.bestPrice = Math.min(trade.bestPrice, currentLow);
             const profit = entry - trade.bestPrice;
-            if (profit >= risk && !trade.stopMovedToBreakeven) {
-                trade.stopLoss = entry;
+            const minMoveToBE = Math.min(risk, 3.0);
+            if (profit >= minMoveToBE && !trade.stopMovedToBreakeven) {
+                trade.stopLoss = entry - 0.5;
                 trade.stopMovedToBreakeven = true;
                 trade.trailingActive = true;
             }
             if (trade.trailingActive) {
-                const newStop = trade.bestPrice + this.atr.atrFast * 0.8;
+                const newStop = trade.bestPrice + this.atr.atrFast * 0.4;
                 if (newStop < trade.stopLoss) trade.stopLoss = newStop;
             }
         }
@@ -1400,17 +1414,9 @@ export class ETHOrderFlowBot {
         // ── BUILD GATE CHAIN ──
         const chain = createChain(now);
 
-        // Gate 0: 4H bias
+        // Gate 0: 4H bias (屏蔽 4H，Sniper 看短线爆发)
         if (!chain.rejected) {
-            if (this.storyline.is4hAligned()) {
-                let v = `4H=${this.storyline.intradayBias}`;
-                if (h4Result) v += `,conf=${h4Result.confidence.toFixed(2)}`;
-                chain.addGate("4h_bias", GateResult.PASS, "", v);
-            } else {
-                chain.addGate("4h_bias", GateResult.REJECT,
-                    `4H=${this.storyline.intradayBias} contradicts W=${this.storyline.weeklyDirection}`,
-                    `4H=${this.storyline.intradayBias}`);
-            }
+            chain.addGate("4h_bias", GateResult.SKIP, "ignored for 150x sniper");
         }
 
         // Gate 1: Walk-3-Rest-1
@@ -1435,11 +1441,9 @@ export class ETHOrderFlowBot {
         } else chain.addGate("kelly_edge", GateResult.SKIP, "upstream");
 
         // Gate 4: Storyline alignment
-        const bias = this.storyline.getBias();
+        const bias = this.storyline.getBias() || Direction.NEUTRAL;
         if (!chain.rejected) {
-            if (bias !== Direction.NEUTRAL) chain.addGate("storyline_align", GateResult.PASS, "",
-                `W=${this.storyline.weeklyDirection},D=${this.storyline.dailyDirection},4H=${this.storyline.intradayBias}`);
-            else chain.addGate("storyline_align", GateResult.REJECT, "MTF not aligned");
+            chain.addGate("storyline_align", GateResult.SKIP, "ignored for sniper");
         } else chain.addGate("storyline_align", GateResult.SKIP, "upstream");
 
         // Gate 5: Exhaustion
@@ -1524,10 +1528,10 @@ export class ETHOrderFlowBot {
         // Gate 12: Position size
         let direction = trapDir; let dynLeverage = 0; let stopPrice = 0; let size = 0;
         if (!chain.rejected && direction && fvgOriginPrice !== null) {
-            dynLeverage = this.atr.maxLeverage(close, StopLossEngine.MAX_RISK_PCT, StopLossEngine.SL_ATR_MULT, ETHOrderFlowBot.LEVERAGE_HARD_CAP);
+            dynLeverage = ETHOrderFlowBot.LEVERAGE_HARD_CAP; // 强制使用硬顶杠杆 150x
             stopPrice = this.stopLoss.computeStopPrice(close, direction, fvgOriginPrice);
             size = this.stopLoss.computePositionSize(close, stopPrice, dynLeverage, this.coldStart.sizeScale);
-            if (size > 0 || this.coldStart.isPaper) chain.addGate("position_size", GateResult.PASS, "", `size=${size.toFixed(4)},lev=${dynLeverage.toFixed(1)}x`);
+            if (size > 0 || this.coldStart.isPaper) chain.addGate("position_size", GateResult.PASS, "", `size=${size.toFixed(4)},lev=${dynLeverage.toFixed(1)}x(SNIPER)`);
             else chain.addGate("position_size", GateResult.REJECT, "size<=0");
         } else chain.addGate("position_size", GateResult.SKIP, "upstream");
 

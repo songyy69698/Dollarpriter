@@ -222,14 +222,16 @@ export class BitunixExecutor {
         await this.setupTradeEnv(targetSymbol);
 
         const tag = genOrderTag();
-        log(`🏁 [V200] ${side.toUpperCase()} ${qty} ${coinName} @ $${currentPrice.toFixed(prec.price)}`);
+        log(`🏁 [V200(SNIPER)] ${side.toUpperCase()} ${qty} ${coinName} @ LIMIT $${currentPrice.toFixed(prec.price)}`);
 
+        // 狙击手限价单模式 (防滑点，防 Taker 巨额手续费)
         const orderData: Record<string, string> = {
             symbol: targetSymbol,
             side: side === "long" ? "BUY" : "SELL",
             tradeSide: "OPEN",
-            orderType: "MARKET",
+            orderType: "LIMIT",
             qty: qty.toFixed(1),
+            price: currentPrice.toFixed(prec.price),
             clientId: tag,
         };
 
@@ -250,8 +252,43 @@ export class BitunixExecutor {
             return false;
         }
 
-        const filledQty = +(result?.filledQty || result?.filled_qty || result?.executedQty || qty);
-        const filledPrice = +(result?.filledPrice || result?.filled_price || result?.avgPrice || result?.price || currentPrice);
+        let filledQty = +(result?.filledQty || result?.filled_qty || result?.executedQty || 0);
+        let filledPrice = +(result?.filledPrice || result?.filled_price || result?.avgPrice || result?.price || 0);
+        const orderId = result?.orderId || result?.order_id || "";
+
+        // Sniper：轮询等待限价单成交 (最多 12s)
+        if (filledQty < qty && orderId) {
+            log(`⏳ [SNIPER] LIMIT 限价单挂出 $${currentPrice.toFixed(prec.price)}, 等待成交 (MAX 12s)...`);
+            for (let i = 0; i < 12; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                // 使用持仓查询来判定是否成交
+                try {
+                    const queryStr = "symbol" + targetSymbol;
+                    const headers = this.sign(queryStr);
+                    const res = await fetch(`${BITUNIX_BASE}/api/v1/futures/position/get_pending_positions?symbol=${targetSymbol}`, { headers: { ...headers, "Content-Type": "application/json", language: "en-US" } });
+                    const data = (await res.json()) as any;
+                    if (String(data?.code) === "0") {
+                        const positions = (data?.data ?? []).filter((p: any) => (p.symbol || "").toUpperCase() === targetSymbol);
+                        const myPos = positions.find((p: any) => String(p.side).toUpperCase() === (side === "long" ? "BUY" : "SELL"));
+                        if (myPos && +(myPos.qty || myPos.positionAmt || 0) > 0) {
+                            filledQty = +(myPos.qty || myPos.positionAmt || qty);
+                            filledPrice = +(myPos.avgPrice || myPos.entryPrice || myPos.openPrice || currentPrice);
+                            break;
+                        }
+                    }
+                } catch { /* ignore */ }
+            }
+            
+            // 12s 后依旧未成交，紧急撤单
+            if (filledQty <= 0) {
+                log(`🚨 [SNIPER] 12秒未成交 (市场跑了)，果断撤销限价单! 放弃狙击。`);
+                await this.cancelOrder(targetSymbol, orderId);
+                this._entering = false;
+                if (onDepthFail) await onDepthFail(`❌ 狙击失败: 限价单 ${orderId} 12s 超时未成交`);
+                return false;
+            }
+        }
+
         const actualPrice = filledPrice > 0 ? filledPrice : currentPrice;
         const actualQty = filledQty > 0 ? filledQty : qty;
 
@@ -261,7 +298,7 @@ export class BitunixExecutor {
         this.signalPrice = currentPrice;
         this.highSlippage = slippage > 1.5;
 
-        log(`✅ ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} (${ms.toFixed(0)}ms) Slip=${slippage.toFixed(prec.price)}pt`);
+        log(`✅ [SNIPER] ${side.toUpperCase()} ${actualQty} ${coinName} @ ${actualPrice.toFixed(prec.price)} (Slip=${slippage.toFixed(prec.price)}pt)`);
 
         this.inPosition = true;
         this._entering = false;
