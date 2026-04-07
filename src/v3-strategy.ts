@@ -153,7 +153,7 @@ export class SlippageTracker {
 // ═══════════════════════════════════════════════
 
 export class ColdStartManager {
-    phase: BotPhase = BotPhase.PHASE_0;
+    phase: BotPhase = BotPhase.PHASE_2; // 🔥 强制开启实盘突击模式
     totalTrades = 0;
 
     recordTrade(wins: number, losses: number, kellyF: number) {
